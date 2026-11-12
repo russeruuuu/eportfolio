@@ -1,0 +1,1653 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chunk Size and Overlap — Notebook</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/notebook.css"><script src="../assets/notebook.js" defer></script></head><body><a class="skip" href="#notebook">Skip to notebook</a><header class="nb-toolbar"><a href="../index.html#work">← Back to activities</a><div><button id="toggle-code" aria-pressed="false">Hide code</button><a href="../ACTIVITIES/FINALS/WEEK%2014%20PT-F1%20%28Optimizing%20Chunk%20Size%20and%20Overlap%29%20Initial%20Preps/PT_F1_%28Optimizing_Chunk_Size_and_Overlap%29_ENRIQUEZ%20%281%29.ipynb" download>Download .ipynb ↗</a></div></header><main class="nb-page" id="notebook"><p class="eyebrow">FINALS / WEEK 14 · NOTEBOOK</p><h1>Chunk Size and Overlap</h1><p class="nb-filename">PT_F1_(Optimizing_Chunk_Size_and_Overlap)_ENRIQUEZ (1).ipynb</p><p class="nb-intro">Read the explanations, code, and saved results below. This preview does not run code; interactive widgets require opening the original notebook in Jupyter or Colab.</p><p class="nb-stats">32 code cells · 34 saved outputs</p><div class="nb-content"><section class="nb-markdown"><h2>Component I. Vector Indexing and Embedding</h2>
+<h2>DecisionThree: JRU Program Inquiry Chatbot</h2>
+<p><strong>Group:</strong> DecisionThree  
+<strong>Member:</strong> Job Russel Enriquez  
+<strong>My dataset:</strong> <code>IT_and_Business_Analytics.pdf</code></p>
+<p>Our group is building a chatbot that answers questions about José Rizal University college programs using information from JRU documents. We divided the dataset into three documents, with one document assigned to each member.</p>
+<p>My document covers BS Information Technology (BSIT) and BSIT with Specialization in Business Analytics (BSIT-BA). This notebook reads the PDF, divides its text into smaller parts, and makes those parts searchable. The chatbot then uses the relevant parts to answer questions about these two programs.</p></section><section class="nb-markdown"><h4>1. INSTALL REQUIRED LIBRARIES</h4></section><section class="nb-markdown"><h4>Cell 1: Install Required Libraries</h4>
+<p>This cell&#x27;s purpose is to install the Python packages used by the indexing and retrieval workflow. Without these dependencies, the notebook cannot read PDFs, split and embed their text, build a FAISS index, or export a review workbook. Colab sessions are temporary, so this installation step may be needed again after a runtime reset.</p>
+<p><code>!pip install -q</code> installs packages with minimal output; <code>faiss-cpu</code> provides the vector similarity search used later in the notebook.</p>
+<p><code>sentence-transformers</code> loads the embedding model, while <code>pypdf</code> extracts text from the curriculum PDF.</p>
+<p><code>transformers</code> loads Qwen and its tokenizer, while <code>accelerate</code> helps place the model on the available device. The same installation command also includes <code>bitsandbytes</code> for 4-bit weights and <code>sentencepiece</code> for tokenizer support.</p>
+<p><code>pandas</code> organizes the chunk records into a table, and <code>openpyxl</code> writes and formats the Excel inspection workbook.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 1 · In [1]</summary><pre><code>!pip install -q \
+    faiss-cpu \
+    sentence-transformers \
+    pypdf \
+    &quot;transformers&gt;=4.51.0&quot; \
+    accelerate \
+    &quot;bitsandbytes&gt;=0.46.1&quot; \
+    sentencepiece \
+    pandas \
+    openpyxl</code></pre></details></section><section class="nb-markdown"><h4>2. IMPORT LIBRARIES</h4></section><section class="nb-markdown"><h4>Cell 2: Import Libraries</h4>
+<p>This cell&#x27;s purpose is to import the libraries needed by the first component of the notebook. Keeping imports together makes dependencies visible and ensures the later PDF, chunking, embedding, indexing, and export cells have their tools available. The imports are grouped here so a missing package is discovered before the main workflow starts.</p>
+<p><code>from google.colab import files</code> and <code>from pypdf import PdfReader</code> are used to import Google Colab&#x27;s upload helper, PdfReader, and SentenceTransformer.</p>
+<p><code>import faiss</code> and <code>import numpy as np</code> are used to import FAISS, NumPy, pandas, pickle, regular expressions, and operating-system path utilities for indexing and file handling.</p>
+<p><code>from openpyxl.styles import Font, PatternFill, Alignment</code> is used to import Excel formatting helpers used to make the exported chunk inspection sheet readable.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 2 · In [2]</summary><pre><code>from google.colab import files
+from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
+
+import faiss
+import numpy as np
+import pandas as pd
+import pickle
+import re
+import os
+
+from openpyxl.styles import Font, PatternFill, Alignment</code></pre></details></section><section class="nb-markdown"><h4>3. INDEXING PARAMETERS</h4></section><section class="nb-markdown"><h4>Cell 3: Indexing Parameters</h4>
+<p>This cell&#x27;s purpose is to set the experimental chunking and retrieval parameters. These settings control how the source document is divided and how many candidate chunks retrieval returns; the embedding model is held constant for fair comparisons. With the current settings, a new 1,500-character chunk begins every 1,200 characters because 300 characters overlap.</p>
+<p><code>CHUNK_SIZE = 1500</code> and <code>CHUNK_OVERLAP = 300</code> are used to define the chunk size and overlap. Adjust these values when testing chunking configurations.</p>
+<p><code>TOP_K = 3</code> is used to set the default number of retrieved chunks, Top K, to three.</p>
+<p><code>EMBEDDING_MODEL_NAME = &quot;all-MiniLM-L6-v2&quot;</code> is used to name the fixed embedding model used to represent both document chunks and questions.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 3 · In [3]</summary><pre><code># Change these values to experiment with chunking.
+
+CHUNK_SIZE = 1500
+CHUNK_OVERLAP = 300
+TOP_K = 3
+
+# Embedding model
+EMBEDDING_MODEL_NAME = &quot;all-MiniLM-L6-v2&quot;</code></pre></details></section><section class="nb-markdown"><h4>4. VALIDATE CHUNK PARAMETERS</h4></section><section class="nb-markdown"><h4>Cell 4: Validate Chunk Parameters</h4>
+<p>This cell&#x27;s purpose is to validate the experiment settings before processing the PDF. Early checks catch invalid parameter combinations that could create empty chunks, non-terminating loops, or an invalid retrieval request. In particular, an overlap equal to the chunk size would make the chunking loop stop advancing.</p>
+<p><code>if CHUNK_SIZE &lt;= 0:</code> and <code>raise ValueError(&quot;CHUNK_SIZE must be greater than 0.&quot;)</code> are used to reject a chunk size of zero or less.</p>
+<p><code>if CHUNK_OVERLAP &lt; 0:</code> and <code>raise ValueError(&quot;CHUNK_OVERLAP cannot be negative.&quot;)</code> are used to reject negative overlap.</p>
+<p><code>if CHUNK_OVERLAP &gt;= CHUNK_SIZE:</code> is used to ensure overlap is smaller than chunk size so each chunking step advances.</p>
+<p><code>if TOP_K &lt;= 0:</code> and <code>raise ValueError(&quot;TOP_K must be greater than 0.&quot;)</code> are used to require a positive Top K.</p>
+<p><code>print(&quot;RAG INDEXING CONFIGURATION&quot;)</code> and <code>print(&quot;Chunk size       :&quot;, CHUNK_SIZE)</code> are used to print the active values so the run can be checked and documented.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 4 · In [4]</summary><pre><code>if CHUNK_SIZE &lt;= 0:
+    raise ValueError(&quot;CHUNK_SIZE must be greater than 0.&quot;)
+
+if CHUNK_OVERLAP &lt; 0:
+    raise ValueError(&quot;CHUNK_OVERLAP cannot be negative.&quot;)
+
+if CHUNK_OVERLAP &gt;= CHUNK_SIZE:
+    raise ValueError(
+        &quot;CHUNK_OVERLAP must be smaller than CHUNK_SIZE.&quot;
+    )
+
+if TOP_K &lt;= 0:
+    raise ValueError(&quot;TOP_K must be greater than 0.&quot;)
+
+
+print(&quot;=&quot; * 70)
+print(&quot;RAG INDEXING CONFIGURATION&quot;)
+print(&quot;=&quot; * 70)
+
+print(&quot;Chunk size       :&quot;, CHUNK_SIZE)
+print(&quot;Chunk overlap    :&quot;, CHUNK_OVERLAP)
+print(&quot;Top-K             :&quot;, TOP_K)
+print(&quot;Embedding model   :&quot;, EMBEDDING_MODEL_NAME)</code></pre></details><pre class="nb-output">======================================================================
+RAG INDEXING CONFIGURATION
+======================================================================
+Chunk size       : 1500
+Chunk overlap    : 300
+Top-K             : 3
+Embedding model   : all-MiniLM-L6-v2
+</pre></section><section class="nb-markdown"><h4>5. UPLOAD PDF DOCUMENT</h4></section><section class="nb-markdown"><h4>Cell 5: Upload PDF Document</h4>
+<p>This cell&#x27;s purpose is to upload and validate the source PDF in Google Colab. This connects the experiment to the chosen curriculum dataset and prevents later cells from silently processing no file or the wrong file type. This cell uses only the first uploaded file, so the chosen PDF should be uploaded by itself.</p>
+<p><code>print(&quot;UPLOAD DOCUMENT&quot;)</code> is used to print a heading for the upload stage.</p>
+<p><code>uploaded = files.upload()</code> is used to open Colab&#x27;s file picker and collect uploaded files.</p>
+<p><code>if len(uploaded) == 0:</code> and <code>raise RuntimeError(&quot;No file was uploaded.&quot;)</code> are used to stop if the user did not upload anything.</p>
+<p><code>pdf_file = next(iter(uploaded.keys()))</code> is used to select the first uploaded filename for this run.</p>
+<p><code>if not pdf_file.lower().endswith(&quot;.pdf&quot;):</code> is used to check that the selected filename ends in .pdf and explain the expected input if it does not.</p>
+<p><code>print(&quot;\nSelected file:&quot;)</code> and <code>print(pdf_file)</code> are used to display the chosen filename for confirmation.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 5 · In [5]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;UPLOAD DOCUMENT&quot;)
+print(&quot;=&quot; * 70)
+
+uploaded = files.upload()
+
+if len(uploaded) == 0:
+    raise RuntimeError(&quot;No file was uploaded.&quot;)
+
+# Use the first uploaded PDF
+pdf_file = next(iter(uploaded.keys()))
+
+if not pdf_file.lower().endswith(&quot;.pdf&quot;):
+    raise ValueError(
+        &quot;The uploaded file is not a PDF. Please upload a PDF.&quot;
+    )
+
+print(&quot;\nSelected file:&quot;)
+print(pdf_file)</code></pre></details><pre class="nb-output">
+
+======================================================================
+UPLOAD DOCUMENT
+======================================================================
+</pre><div class="nb-rich-output">
+     
+     
+      Upload widget is only available when the cell has been executed in the
+      current browser session. Please rerun this cell to enable.
+      
+       </div><pre class="nb-output">Saving IT_and_Business_Analytics.pdf to IT_and_Business_Analytics (1).pdf
+
+Selected file:
+IT_and_Business_Analytics (1).pdf
+</pre></section><section class="nb-markdown"><h4>6. EXTRACT TEXT FROM PDF</h4></section><section class="nb-markdown"><h4>Cell 6: Extract Text From PDF</h4>
+<p>This cell&#x27;s purpose is to extract and clean text from every page of the uploaded PDF. RAG can retrieve only from text that was successfully extracted; preserving page numbers also lets answers report where evidence came from. A page with no extractable text is not added to the searchable dataset.</p>
+<p><code>print(&quot;EXTRACTING PDF TEXT&quot;)</code> is used to label the extraction stage in the output.</p>
+<p><code>reader = PdfReader(pdf_file)</code> is used to open the selected PDF with pypdf.</p>
+<p><code>pages = []</code> is used to create a list that will hold non-empty page records.</p>
+<p><code>for page_number, page in enumerate(reader.pages, start=1):</code> and <code>page_text = page.extract_text()</code> are used to visit pages in order, starting page numbering at one, and extract each page&#x27;s text.</p>
+<p><code>if page_text:</code> and <code>page_text</code> are used to skip empty pages and normalize repeated whitespace into a cleaner single-space text string.</p>
+<p><code>if page_text:</code> and <code>pages.append({</code> are used to store each usable page as a record containing its page number and cleaned text.</p>
+<p><code>print(&quot;PDF pages:&quot;, len(reader.pages))</code> and <code>print(&quot;Pages containing text:&quot;, len(pages))</code> are used to report total pages and pages with extractable text to reveal scanning or extraction issues.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 6 · In [6]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;EXTRACTING PDF TEXT&quot;)
+print(&quot;=&quot; * 70)
+
+reader = PdfReader(pdf_file)
+
+pages = []
+
+for page_number, page in enumerate(reader.pages, start=1):
+
+    page_text = page.extract_text()
+
+    if page_text:
+
+        # Normalize whitespace
+        page_text = re.sub(
+            r&quot;\s+&quot;,
+            &quot; &quot;,
+            page_text
+        ).strip()
+
+        if page_text:
+            pages.append({
+                &quot;page&quot;: page_number,
+                &quot;text&quot;: page_text
+            })
+
+
+print(&quot;PDF pages:&quot;, len(reader.pages))
+print(&quot;Pages containing text:&quot;, len(pages))</code></pre></details><pre class="nb-output">
+
+======================================================================
+EXTRACTING PDF TEXT
+======================================================================
+PDF pages: 22
+Pages containing text: 22
+</pre></section><section class="nb-markdown"><h4>7. CHECK WHETHER TEXT WAS EXTRACTED</h4></section><section class="nb-markdown"><h4>Cell 7: Check Whether Text Was Extracted</h4>
+<p>This cell&#x27;s purpose is to stop when PDF text extraction produced no usable pages. This avoids creating an empty index and tells the user when OCR may be needed for a scanned image-only PDF. If the PDF contains only page images, optical character recognition is needed before this notebook can index its content.</p>
+<p><code>if len(pages) == 0:</code> is used to check the extracted page list; raise a clear error if it is empty, including the likely scanned-PDF cause.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 7 · In [7]</summary><pre><code>if len(pages) == 0:
+    raise RuntimeError(
+        &quot;No text could be extracted from the PDF. &quot;
+        &quot;The PDF may consist of scanned images and require OCR.&quot;
+    )</code></pre></details></section><section class="nb-markdown"><h4>8. CREATE DOCUMENT CHUNKS</h4></section><section class="nb-markdown"><h4>Cell 8: Create Document Chunks</h4>
+<p>This cell&#x27;s purpose is to define and run the character-based chunking function. Chunking turns long pages into smaller retrieval units while keeping source page numbers. Overlap reduces the chance that an answer is split across a chunk boundary. Chunk IDs increase in order, and each chunk keeps the page number of the page from which it was created.</p>
+<p><code>create_chunks</code> is used to define the function inputs and document that chunks are created separately for each page, with overlap within that page.</p>
+<p><code>chunks = []</code> and <code>chunk_id = 0</code> are used to initialize the output list and sequential chunk IDs; compute the forward step as chunk size minus overlap.</p>
+<p><code>for page_data in pages:</code> and <code>page_number = page_data[&quot;page&quot;]</code> are used to process each page record and keep its page number and text together.</p>
+<p><code>start = 0</code> and <code>while start &lt; len(page_text):</code> are used to move through the page text in steps, slice out at most one chunk&#x27;s characters, and trim surrounding whitespace.</p>
+<p><code>if chunk_text:</code> and <code>chunks.append({</code> are used to add non-empty chunks with their ID, page, and text, then advance the ID.</p>
+<p><code>start += step_size</code> and <code>return chunks</code> are used to advance by the overlap-aware step and return all generated chunks.</p>
+<p><code>chunks</code> is used to run the function using the current parameter settings and save its result as chunks.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 8 · In [8]</summary><pre><code>def create_chunks(
+    pages,
+    chunk_size,
+    chunk_overlap
+):
+    &quot;&quot;&quot;
+    Split each page into character-based chunks.
+
+    Chunking is performed independently for each page.
+    Overlap is maintained between consecutive chunks
+    from the same page.
+    &quot;&quot;&quot;
+
+    chunks = []
+    chunk_id = 0
+
+    step_size = chunk_size - chunk_overlap
+
+    for page_data in pages:
+
+        page_number = page_data[&quot;page&quot;]
+        page_text = page_data[&quot;text&quot;]
+
+        start = 0
+
+        while start &lt; len(page_text):
+
+            end = start + chunk_size
+
+            chunk_text = page_text[start:end].strip()
+
+            if chunk_text:
+                chunks.append({
+                    &quot;chunk_id&quot;: chunk_id,
+                    &quot;page&quot;: page_number,
+                    &quot;text&quot;: chunk_text
+                })
+
+                chunk_id += 1
+
+            # Move forward while maintaining overlap
+            start += step_size
+
+    return chunks
+
+
+chunks = create_chunks(
+    pages,
+    CHUNK_SIZE,
+    CHUNK_OVERLAP
+)</code></pre></details></section><section class="nb-markdown"><h4>9. DISPLAY CHUNKING INFORMATION</h4></section><section class="nb-markdown"><h4>Cell 9: Display Chunking Information</h4>
+<p>This cell&#x27;s purpose is to summarize the generated chunk set. These checks confirm chunk creation succeeded and show whether the chosen size produced the expected distribution before embedding begins. The last chunk on a page is often shorter than the chosen chunk size, which is expected.</p>
+<p><code>print(&quot;CHUNKING RESULTS&quot;)</code> is used to label the results section.</p>
+<p><code>print(&quot;Number of chunks:&quot;, len(chunks))</code> and <code>if len(chunks) == 0:</code> are used to display the chunk count and stop if no chunks were created.</p>
+<p><code>chunk_lengths = [</code> and <code>len(chunk[&quot;text&quot;])</code> are used to measure each chunk&#x27;s text length.</p>
+<p><code>round(np.mean(chunk_lengths), 2)</code> is used to calculate and display the mean chunk length.</p>
+<p><code>min(chunk_lengths),</code> and <code>max(chunk_lengths),</code> are used to show the shortest and longest chunk lengths to expose unusually small or large chunks.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 9 · In [9]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;CHUNKING RESULTS&quot;)
+print(&quot;=&quot; * 70)
+
+print(&quot;Number of chunks:&quot;, len(chunks))
+
+if len(chunks) == 0:
+    raise RuntimeError(
+        &quot;No chunks were generated. Check the extracted PDF text.&quot;
+    )
+
+chunk_lengths = [
+    len(chunk[&quot;text&quot;])
+    for chunk in chunks
+]
+
+print(
+    &quot;Average characters per chunk:&quot;,
+    round(np.mean(chunk_lengths), 2)
+)
+
+print(
+    &quot;Shortest chunk:&quot;,
+    min(chunk_lengths),
+    &quot;characters&quot;
+)
+
+print(
+    &quot;Longest chunk:&quot;,
+    max(chunk_lengths),
+    &quot;characters&quot;
+)</code></pre></details><pre class="nb-output">
+
+======================================================================
+CHUNKING RESULTS
+======================================================================
+Number of chunks: 55
+Average characters per chunk: 1105.25
+Shortest chunk: 155 characters
+Longest chunk: 1500 characters
+</pre></section><section class="nb-markdown"><h4>10. EXPORT GENERATED CHUNKS TO EXCEL</h4></section><section class="nb-markdown"><h4>Cell 10: Export Generated Chunks To Excel</h4>
+<p>This cell&#x27;s purpose is to export the generated chunks and their source metadata to Excel. The spreadsheet makes the exact retrieval units inspectable, supports manual relevance labeling, and helps validate page provenance and chunk settings. The exported workbook records exactly what the model can retrieve, which makes it useful for checking evidence and marking relevance.</p>
+<p><code>print(&quot;EXPORTING GENERATED CHUNKS TO EXCEL&quot;)</code> is used to label the export stage.</p>
+<p><code>chunk_records = []</code> and <code>for chunk in chunks:</code> are used to create one row per chunk, retaining its ID, source PDF, page, character count, chunk settings, and text.</p>
+<p><code>chunks_df = pd.DataFrame(chunk_records)</code> is used to convert the list of records into a pandas table.</p>
+<p><code>base_name</code> and <code>os.path.basename(pdf_file)</code> are used to build an output filename from the uploaded PDF&#x27;s name.</p>
+<p><code>with pd.ExcelWriter</code> and <code>engine=&quot;openpyxl&quot;</code> are used to create the Excel workbook and write the table to a named worksheet without an extra DataFrame index.</p>
+<p><code>worksheet = writer.sheets[&quot;Generated_Chunks&quot;]</code> and <code>for cell in worksheet[1]:</code> are used to format header cells with bold white text, a dark fill, centered alignment, and wrapping.</p>
+<p><code>column_widths = {</code> and <code>for column, width in column_widths.items():</code> are used to set column widths so metadata and chunk text are easier to inspect.</p>
+<p><code>for row in worksheet.iter_rows</code> and <code>min_row=2,</code> are used to wrap long chunk text and align worksheet values at the top of each cell.</p>
+<p><code>worksheet.freeze_panes = &quot;A2&quot;</code> and <code>worksheet.auto_filter.ref = worksheet.dimensions</code> are used to freeze the header row, enable filtering, and set a readable header height.</p>
+<p><code>print(&quot;Excel file created:&quot;, EXCEL_FILE)</code> and <code>print(&quot;Chunks exported:&quot;, len(chunks_df))</code> are used to report the output filename, number of rows, and worksheet name.</p>
+<p><code>print(&quot;\nExcel export preview:&quot;)</code> and <code>chunks_df[</code> are used to print a compact preview of the first ten chunk IDs, pages, and lengths.</p>
+<p><code>files.download(EXCEL_FILE)</code> is used to trigger a download of the workbook in Google Colab.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 10 · In [10]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;EXPORTING GENERATED CHUNKS TO EXCEL&quot;)
+print(&quot;=&quot; * 70)
+
+# Prepare one Excel row for every generated chunk.
+chunk_records = []
+
+for chunk in chunks:
+
+    chunk_records.append({
+        &quot;Chunk_ID&quot;: chunk[&quot;chunk_id&quot;],
+        &quot;Source_Document&quot;: pdf_file,
+        &quot;Page_Number&quot;: chunk[&quot;page&quot;],
+        &quot;Character_Count&quot;: len(chunk[&quot;text&quot;]),
+        &quot;Chunk_Size_Setting&quot;: CHUNK_SIZE,
+        &quot;Chunk_Overlap_Setting&quot;: CHUNK_OVERLAP,
+        &quot;Chunk_Text&quot;: chunk[&quot;text&quot;]
+    })
+
+chunks_df = pd.DataFrame(chunk_records)
+
+# Create an output filename based on the source PDF.
+base_name = os.path.splitext(
+    os.path.basename(pdf_file)
+)[0]
+
+EXCEL_FILE = f&quot;{base_name}_chunks_inspection.xlsx&quot;
+
+# Create and format the Excel workbook.
+with pd.ExcelWriter(
+    EXCEL_FILE,
+    engine=&quot;openpyxl&quot;
+) as writer:
+
+    chunks_df.to_excel(
+        writer,
+        sheet_name=&quot;Generated_Chunks&quot;,
+        index=False
+    )
+
+    worksheet = writer.sheets[&quot;Generated_Chunks&quot;]
+
+    # Format the header row.
+    for cell in worksheet[1]:
+
+        cell.font = Font(
+            bold=True,
+            color=&quot;FFFFFF&quot;
+        )
+
+        cell.fill = PatternFill(
+            fill_type=&quot;solid&quot;,
+            fgColor=&quot;1F4E78&quot;
+        )
+
+        cell.alignment = Alignment(
+            horizontal=&quot;center&quot;,
+            vertical=&quot;center&quot;,
+            wrap_text=True
+        )
+
+    # Set column widths.
+    column_widths = {
+        &quot;A&quot;: 12,
+        &quot;B&quot;: 35,
+        &quot;C&quot;: 14,
+        &quot;D&quot;: 18,
+        &quot;E&quot;: 20,
+        &quot;F&quot;: 23,
+        &quot;G&quot;: 80
+    }
+
+    for column, width in column_widths.items():
+        worksheet.column_dimensions[column].width = width
+
+    # Format rows for easier inspection.
+    for row in worksheet.iter_rows(
+        min_row=2,
+        max_row=worksheet.max_row
+    ):
+
+        for cell in row:
+
+            cell.alignment = Alignment(
+                vertical=&quot;top&quot;,
+                wrap_text=(cell.column == 7)
+            )
+
+    # Keep headers visible while scrolling.
+    worksheet.freeze_panes = &quot;A2&quot;
+
+    # Enable filtering.
+    worksheet.auto_filter.ref = worksheet.dimensions
+
+    # Set header height.
+    worksheet.row_dimensions[1].height = 32
+
+print(&quot;Excel file created:&quot;, EXCEL_FILE)
+print(&quot;Chunks exported:&quot;, len(chunks_df))
+print(&quot;Excel worksheet: Generated_Chunks&quot;)
+
+print(&quot;\nExcel export preview:&quot;)
+
+print(
+    chunks_df[
+        [
+            &quot;Chunk_ID&quot;,
+            &quot;Page_Number&quot;,
+            &quot;Character_Count&quot;
+        ]
+    ].head(10).to_string(index=False)
+)
+
+# Automatically download the Excel workbook in Google Colab.
+files.download(EXCEL_FILE)</code></pre></details><pre class="nb-output">
+
+======================================================================
+EXPORTING GENERATED CHUNKS TO EXCEL
+======================================================================
+Excel file created: IT_and_Business_Analytics (1)_chunks_inspection.xlsx
+Chunks exported: 55
+Excel worksheet: Generated_Chunks
+
+Excel export preview:
+ Chunk_ID  Page_Number  Character_Count
+        0            1             1500
+        1            1              600
+        2            2             1499
+        3            2             1103
+        4            3             1500
+        5            3              445
+        6            4             1355
+        7            4              155
+        8            5             1500
+        9            5              634
+</pre><pre class="nb-output">&lt;IPython.core.display.Javascript object&gt;</pre><pre class="nb-output">&lt;IPython.core.display.Javascript object&gt;</pre></section><section class="nb-markdown"><h4>11. DISPLAY SAMPLE CHUNKS</h4>
+<p>Print sample chunks to check that text boundaries and page metadata look sensible.</p></section><section class="nb-markdown"><h4>Explanation — Cell 11: Display Sample Chunks</h4>
+<p>This cell&#x27;s purpose is to display the first three chunks as a quick content check. A sample helps catch bad text extraction, incorrect page attribution, or awkward boundaries before vectors are created. This quick preview complements the full Excel inspection; it is useful for detecting obvious extraction errors early.</p>
+<p><code>print(&quot;SAMPLE CHUNKS&quot;)</code> is used to label the sample output.</p>
+<p><code>for chunk in chunks[:3]:</code> is used to select the first three chunk records.</p>
+<p><code>print(f&quot;\nChunk ID : {chunk[&#x27;chunk_id&#x27;]}&quot;)</code> and <code>print(f&quot;Page     : {chunk[&#x27;page&#x27;]}&quot;)</code> are used to show each sample&#x27;s ID, source page, and character count.</p>
+<p><code>print(chunk[&quot;text&quot;])</code> is used to separate and print the chunk text for direct inspection.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 11 · In [11]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;SAMPLE CHUNKS&quot;)
+print(&quot;=&quot; * 70)
+
+for chunk in chunks[:3]:
+
+    print(f&quot;\nChunk ID : {chunk[&#x27;chunk_id&#x27;]}&quot;)
+    print(f&quot;Page     : {chunk[&#x27;page&#x27;]}&quot;)
+    print(f&quot;Characters: {len(chunk[&#x27;text&#x27;])}&quot;)
+
+    print(&quot;-&quot; * 70)
+
+    print(chunk[&quot;text&quot;])</code></pre></details><pre class="nb-output">
+
+======================================================================
+SAMPLE CHUNKS
+======================================================================
+
+Chunk ID : 0
+Page     : 1
+Characters: 1500
+----------------------------------------------------------------------
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+Chunk ID : 1
+Page     : 1
+Characters: 600
+----------------------------------------------------------------------
+, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection, creation, evaluation, and administration of computer -based system; e. design, implement and evaluate computer -based systems, processes, components, or programs to meet desired needs and requirements under various constraints; f. integrate IT-based solutions into the under environment effectively;
+
+Chunk ID : 2
+Page     : 2
+Characters: 1499
+----------------------------------------------------------------------
+Page 91 g. apply knowledge through the use of current techniques, skills, tools, and practices necessary for the IT profession; h. function effectively as a member or leader of a development team recognizing the different roles within a team to accomplish a common goal; i. assist in the creation of an effective IT project plan; j. communicate effectively with the computing community and with society at large about complex computing activities through logical writing, presentations, and clear instructions; k. analyze the local and global impact of computing information technology on individuals, organizations, and society; understand professional, ethical, legal, security, and social issues and responsibilities in the utilization of information technology; and l. recognize the need for and engage in planning, self -learning, and improving performance as a foundation for continuing professional development. CURRICULUM REQUIREMENTS BY YEAR FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY FIRST YEAR First Semester Units Second Semester Units HIS C101 Readings in Philippine History 3 SSC C102 Contemporary World 3 ENG C101 Purposive Communication 1 3 PHI C102 Ethics 3 FOS C101 Strategies for Academic Success in College 3 HUM C102 Art Appreciation 3 MAT C101 Mathematics in the Modern World 3 MAT C604 Discrete Structures 3 ITC C103 Fundamentals of IT 3 ITC C102 Computer System &amp; Troubleshooting for IT 3 ITC C105 Computer Programming 1 3 ITC C106 Computer Programming 2
+</pre></section><section class="nb-markdown"><h4>12. LOAD EMBEDDING MODEL</h4>
+<p>Load the sentence-transformer used to encode both document chunks and future questions into the same vector space.</p></section><section class="nb-markdown"><h4>Explanation — Cell 12: Load Embedding Model</h4>
+<p>This cell&#x27;s purpose is to load the sentence embedding model. The same model will encode document chunks and user questions into vectors that can be compared during semantic retrieval. The embedding model represents meaning as numbers; it does not write the final chatbot answer.</p>
+<p><code>print(&quot;LOADING EMBEDDING MODEL&quot;)</code> is used to label the model-loading stage.</p>
+<p><code>embedding_model</code> is used to load the configured SentenceTransformer model into memory.</p>
+<p><code>print(&quot;Embedding model:&quot;, EMBEDDING_MODEL_NAME)</code> is used to print the model name to confirm which embedder is active.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 12 · In [12]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;LOADING EMBEDDING MODEL&quot;)
+print(&quot;=&quot; * 70)
+
+embedding_model = SentenceTransformer(
+    EMBEDDING_MODEL_NAME
+)
+
+print(&quot;Embedding model:&quot;, EMBEDDING_MODEL_NAME)</code></pre></details><pre class="nb-output">
+
+======================================================================
+LOADING EMBEDDING MODEL
+======================================================================
+</pre><pre class="nb-output">Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+</pre><pre class="nb-output">Loading weights:   0%|          | 0/103 [00:00&lt;?, ?it/s]</pre><pre class="nb-output">Embedding model: all-MiniLM-L6-v2
+</pre></section><section class="nb-markdown"><h4>13. EXTRACT CHUNK TEXT</h4></section><section class="nb-markdown"><h4>Explanation — Cell 13: Extract Chunk Text</h4>
+<p>This cell&#x27;s purpose is to create a text-only list from the chunk records. The embedding model accepts text strings; keeping this list in the same order as chunks preserves the mapping between vectors and source records. Changing the order here without changing the chunk records would attach the wrong page and text to a search result.</p>
+<p><code>chunk_texts = [</code> and <code>chunk[&quot;text&quot;]</code> are used to build chunk_texts by taking the text field from each chunk without changing its order.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 13 · In [13]</summary><pre><code>chunk_texts = [
+    chunk[&quot;text&quot;]
+    for chunk in chunks
+]</code></pre></details></section><section class="nb-markdown"><h4>14. CREATE DOCUMENT EMBEDDINGS</h4></section><section class="nb-markdown"><h4>Cell 14: Create Document Embeddings</h4>
+<p>This cell&#x27;s purpose is to encode every chunk as a normalized vector. FAISS needs numeric vectors to perform similarity search. Normalization makes inner-product scores comparable to cosine similarity. One row of the resulting matrix corresponds to one source chunk.</p>
+<p><code>print(&quot;CREATING DOCUMENT EMBEDDINGS&quot;)</code> is used to label the embedding step.</p>
+<p><code>embeddings</code> and <code>convert_to_numpy=True,</code> are used to encode the ordered chunk texts, return NumPy arrays, normalize each vector, and show progress.</p>
+<p><code>embeddings = embeddings.astype(&quot;float32&quot;)</code> is used to convert vectors to float32, the data type expected by the FAISS index used below.</p>
+<p><code>print(&quot;\nEmbedding matrix shape:&quot;)</code> and <code>print(embeddings.shape)</code> are used to report the embedding matrix dimensions for verification.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 14 · In [14]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;CREATING DOCUMENT EMBEDDINGS&quot;)
+print(&quot;=&quot; * 70)
+
+embeddings = embedding_model.encode(
+    chunk_texts,
+    convert_to_numpy=True,
+    normalize_embeddings=True,
+    show_progress_bar=True
+)
+
+# FAISS expects float32 vectors.
+embeddings = embeddings.astype(&quot;float32&quot;)
+
+print(&quot;\nEmbedding matrix shape:&quot;)
+print(embeddings.shape)</code></pre></details><pre class="nb-output">
+
+======================================================================
+CREATING DOCUMENT EMBEDDINGS
+======================================================================
+</pre><pre class="nb-output">Batches:   0%|          | 0/2 [00:00&lt;?, ?it/s]</pre><pre class="nb-output">
+Embedding matrix shape:
+(55, 384)
+</pre></section><section class="nb-markdown"><h4>15. CREATE FAISS VECTOR STORE</h4></section><section class="nb-markdown"><h4>Cell 15: Create FAISS Vector Store</h4>
+<p>This cell&#x27;s purpose is to build the FAISS vector index from the document embeddings. The index is the searchable representation of the corpus; its row order must stay aligned with the chunk list for correct source recovery. The number of stored vectors should equal the number of chunks created earlier.</p>
+<p><code>print(&quot;CREATING FAISS VECTOR STORE&quot;)</code> is used to label vector-store construction.</p>
+<p><code>embedding_dimension = embeddings.shape[1]</code> is used to read the vector width from the embedding matrix.</p>
+<p><code>index</code> is used to create an inner-product index; because vectors were normalized, scores correspond to cosine similarity.</p>
+<p><code>index.add(embeddings)</code> is used to add all document vectors to the index in their existing order.</p>
+<p><code>print(&quot;Embedding dimension:&quot;, embedding_dimension)</code> and <code>print(&quot;Vectors stored:&quot;, index.ntotal)</code> are used to print the vector dimension and indexed vector count.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 15 · In [15]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;CREATING FAISS VECTOR STORE&quot;)
+print(&quot;=&quot; * 70)
+
+embedding_dimension = embeddings.shape[1]
+
+# Inner Product on normalized vectors is equivalent
+# to cosine similarity.
+index = faiss.IndexFlatIP(
+    embedding_dimension
+)
+
+index.add(embeddings)
+
+print(&quot;Embedding dimension:&quot;, embedding_dimension)
+print(&quot;Vectors stored:&quot;, index.ntotal)</code></pre></details><pre class="nb-output">
+
+======================================================================
+CREATING FAISS VECTOR STORE
+======================================================================
+Embedding dimension: 384
+Vectors stored: 55
+</pre></section><section class="nb-markdown"><h4>16. CREATE CHUNK LOOKUP</h4></section><section class="nb-markdown"><h4>Cell 16: Create Chunk Lookup</h4>
+<p>This cell&#x27;s purpose is to map each FAISS row position back to its original chunk record. FAISS returns vector positions rather than page and chunk metadata. This lookup is what lets retrieval return the correct text and citation details. If this cell is skipped, retrieval cannot resolve FAISS positions to chunks and may raise a missing-variable error.</p>
+<p><code># The embedding row index corresponds to the position</code> and <code># of the chunk in the chunks list.</code> are used to document the required alignment between vector positions and the chunks list.</p>
+<p><code>chunk_lookup = {</code> and <code>position: chunk</code> are used to create a dictionary whose keys are zero-based embedding positions and whose values are the matching chunk records.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 16 · In [16]</summary><pre><code># The embedding row index corresponds to the position
+# of the chunk in the chunks list.
+
+chunk_lookup = {
+    position: chunk
+    for position, chunk in enumerate(chunks)
+}</code></pre></details></section><section class="nb-markdown"><h4>17. DEFINE RETRIEVAL FUNCTION</h4></section><section class="nb-markdown"><h4>Cell 17: Define Retrieval Function</h4>
+<p>This cell&#x27;s purpose is to define semantic retrieval for one user question. This function is the bridge from a question to ranked source passages; it returns evidence with IDs, pages, and scores for later prompting and evaluation. The returned source details allow the chatbot answer to be checked against the original PDF.</p>
+<p><code>retrieve_documents</code> and <code>top_k=3</code> are used to define the query and Top K inputs and document the fields returned.</p>
+<p><code>if not query or not query.strip():</code> and <code>raise ValueError(&quot;The query cannot be empty.&quot;)</code> are used to reject blank questions and non-positive retrieval counts.</p>
+<p><code>query_embedding</code> and <code>[query],</code> are used to encode the question with the same normalized embedding model and cast it to float32.</p>
+<p><code>search_k = min(top_k, index.ntotal)</code> and <code>scores, indices</code> are used to limit search depth to the number of indexed chunks and ask FAISS for the closest vectors.</p>
+<p><code>results = []</code> and <code>for rank, idx in enumerate(indices[0]):</code> are used to walk through ranked results, skip empty FAISS slots, and resolve each position through chunk_lookup.</p>
+<p><code>results.append({</code> and <code>})</code> are used to return rank, source chunk ID, page, similarity score, and text for each result.</p>
+<p><code>return results</code> is used to return the complete ranked result list.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 17 · In [17]</summary><pre><code>def retrieve_documents(
+    query,
+    top_k=3
+):
+    &quot;&quot;&quot;
+    Retrieve the top matching chunks using FAISS.
+
+    Returns chunk ID, page, similarity score, and text.
+    &quot;&quot;&quot;
+
+    if not query or not query.strip():
+        raise ValueError(&quot;The query cannot be empty.&quot;)
+
+    if top_k &lt;= 0:
+        raise ValueError(&quot;top_k must be greater than 0.&quot;)
+
+    # Convert the question into an embedding.
+    query_embedding = embedding_model.encode(
+        [query],
+        convert_to_numpy=True,
+        normalize_embeddings=True
+    )
+
+    query_embedding = query_embedding.astype(&quot;float32&quot;)
+
+    # Avoid requesting more results than available vectors.
+    search_k = min(top_k, index.ntotal)
+
+    # Search the FAISS vector store.
+    scores, indices = index.search(
+        query_embedding,
+        search_k
+    )
+
+    results = []
+
+    for rank, idx in enumerate(indices[0]):
+
+        if idx == -1:
+            continue
+
+        chunk = chunk_lookup[int(idx)]
+
+        results.append({
+            &quot;rank&quot;: rank + 1,
+            &quot;chunk_id&quot;: chunk[&quot;chunk_id&quot;],
+            &quot;page&quot;: chunk[&quot;page&quot;],
+            &quot;score&quot;: float(scores[0][rank]),
+            &quot;text&quot;: chunk[&quot;text&quot;]
+        })
+
+    return results</code></pre></details></section><section class="nb-markdown"><h4>18. TEST RETRIEVAL</h4></section><section class="nb-markdown"><h4>Cell 18: Test Retrieval</h4>
+<p>This cell&#x27;s purpose is to run a manual retrieval test before the LLM is involved. This isolates embedding and FAISS behavior so retrieval quality can be checked independently of answer generation. A poor result here points to chunking or retrieval, before the language model is involved.</p>
+<p><code>print(&quot;TESTING VECTOR STORE&quot;)</code> is used to label the vector-store test.</p>
+<p><code>test_query</code> is used to ask for a test question, allowing Enter to skip this optional test.</p>
+<p><code>if test_query.strip():</code> and <code>test_results</code> handle a conditional case. If a question was entered, retrieve up to the configured Top K results.</p>
+<p><code>print(&quot;RETRIEVED CHUNKS&quot;)</code> is used to add a heading for the returned passages.</p>
+<p><code>for result in test_results:</code> and <code>print(f&quot;\nRESULT {result[&#x27;rank&#x27;]}&quot;)</code> are used to print each result&#x27;s rank, chunk, page, similarity, and text so relevance can be judged.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 18 · In [18]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;TESTING VECTOR STORE&quot;)
+print(&quot;=&quot; * 70)
+
+test_query = input(
+    &quot;\nEnter a test question &quot;
+    &quot;(or press Enter to skip): &quot;
+)
+
+if test_query.strip():
+
+    test_results = retrieve_documents(
+        test_query,
+        TOP_K
+    )
+
+    print(&quot;\n&quot;)
+    print(&quot;=&quot; * 70)
+    print(&quot;RETRIEVED CHUNKS&quot;)
+    print(&quot;=&quot; * 70)
+
+    for result in test_results:
+
+        print(f&quot;\nRESULT {result[&#x27;rank&#x27;]}&quot;)
+        print(f&quot;Chunk ID   : {result[&#x27;chunk_id&#x27;]}&quot;)
+        print(f&quot;Page       : {result[&#x27;page&#x27;]}&quot;)
+        print(f&quot;Similarity : {result[&#x27;score&#x27;]:.4f}&quot;)
+
+        print(&quot;-&quot; * 70)
+
+        print(result[&quot;text&quot;])</code></pre></details><pre class="nb-output">
+
+======================================================================
+TESTING VECTOR STORE
+======================================================================
+
+Enter a test question (or press Enter to skip): 
+</pre></section><section class="nb-markdown"><h4>19. SAVE FAISS INDEX</h4></section><section class="nb-markdown"><h4>Cell 19: Save FAISS Index</h4>
+<p>This cell&#x27;s purpose is to save the FAISS index to disk. Saving avoids rebuilding the vector index when the same chunk set is reused later. The saved index must be paired with the matching chunk metadata from the same run.</p>
+<p><code>FAISS_FILE = &quot;rag_faiss.index&quot;</code> is used to choose a stable filename for the index.</p>
+<p><code>faiss.write_index</code> is used to serialize the in-memory FAISS index to that file.</p>
+<p><code>print(&quot;\nFAISS index saved:&quot;, FAISS_FILE)</code> is used to confirm the saved index path.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 19 · In [19]</summary><pre><code>FAISS_FILE = &quot;rag_faiss.index&quot;
+
+faiss.write_index(
+    index,
+    FAISS_FILE
+)
+
+print(&quot;\nFAISS index saved:&quot;, FAISS_FILE)</code></pre></details><pre class="nb-output">
+FAISS index saved: rag_faiss.index
+</pre></section><section class="nb-markdown"><h4>20. SAVE CHUNKS AND METADATA</h4></section><section class="nb-markdown"><h4>Cell 20: Save Chunks And Metadata</h4>
+<p>This cell&#x27;s purpose is to save the original chunk records alongside the index. The vector index contains vectors but not the complete source text and page metadata; this file preserves the records needed to interpret search results. The order of these saved chunks must match the order used when vectors were added to FAISS.</p>
+<p><code>CHUNKS_FILE = &quot;rag_chunks.pkl&quot;</code> is used to choose a filename for the chunk metadata.</p>
+<p><code>with open(CHUNKS_FILE, &quot;wb&quot;) as f:</code> and <code>pickle.dump</code> are used to open the file in binary write mode and serialize the chunks list with pickle.</p>
+<p><code>print(&quot;Chunks saved:&quot;, CHUNKS_FILE)</code> is used to confirm the saved chunk file.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 20 · In [20]</summary><pre><code>CHUNKS_FILE = &quot;rag_chunks.pkl&quot;
+
+with open(CHUNKS_FILE, &quot;wb&quot;) as f:
+
+    pickle.dump(
+        chunks,
+        f
+    )
+
+print(&quot;Chunks saved:&quot;, CHUNKS_FILE)</code></pre></details><pre class="nb-output">Chunks saved: rag_chunks.pkl
+</pre></section><section class="nb-markdown"><h4>21. SAVE INDEXING CONFIGURATION</h4></section><section class="nb-markdown"><h4>Cell 21: Save Indexing Configuration</h4>
+<p>This cell&#x27;s purpose is to save the settings used to build the index. Recording the parameters makes runs reproducible and helps identify which chunking, embedding, and retrieval setup produced a result. These values allow the group to identify and compare a specific experimental configuration later.</p>
+<p><code>CONFIG_FILE = &quot;rag_config.pkl&quot;</code> is used to choose a filename for the configuration.</p>
+<p><code>config = {</code> is used to collect chunk size, overlap, Top K, embedding model, and source document into one dictionary.</p>
+<p><code>with open(CONFIG_FILE, &quot;wb&quot;) as f:</code> and <code>pickle.dump</code> are used to serialize the configuration dictionary to disk.</p>
+<p><code>print(&quot;Configuration saved:&quot;, CONFIG_FILE)</code> is used to confirm the saved configuration path.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 21 · In [21]</summary><pre><code>CONFIG_FILE = &quot;rag_config.pkl&quot;
+
+config = {
+    &quot;chunk_size&quot;: CHUNK_SIZE,
+    &quot;chunk_overlap&quot;: CHUNK_OVERLAP,
+    &quot;top_k&quot;: TOP_K,
+    &quot;embedding_model&quot;: EMBEDDING_MODEL_NAME,
+    &quot;source_document&quot;: pdf_file
+}
+
+with open(CONFIG_FILE, &quot;wb&quot;) as f:
+
+    pickle.dump(
+        config,
+        f
+    )
+
+print(&quot;Configuration saved:&quot;, CONFIG_FILE)</code></pre></details><pre class="nb-output">Configuration saved: rag_config.pkl
+</pre></section><section class="nb-markdown"><h4>22. INDEXING COMPLETE</h4></section><section class="nb-markdown"><h4>Cell 22: Indexing Complete</h4>
+<p>This cell&#x27;s purpose is to summarize the completed indexing run and its files. This final checkpoint confirms that chunks and vectors agree and tells the user where each artifact was saved before moving to the answering component. This report is a final check that the expected files and counts exist before answering questions.</p>
+<p><code>print(&quot;INDEXING COMPLETE&quot;)</code> is used to label successful completion of indexing.</p>
+<p><code>print(&quot;Source document :&quot;, pdf_file)</code> and <code>print(&quot;Number of chunks:&quot;, len(chunks))</code> are used to report source, chunk count, indexed vector count, chunk settings, and embedding model.</p>
+<p><code>print(&quot;\nSaved files:&quot;)</code> and <code>print(&quot;  &quot;, EXCEL_FILE)</code> are used to list the Excel inspection workbook, FAISS index, chunk records, and settings file.</p>
+<p><code>print(&quot;\nThe vector store is ready for retrieval.&quot;)</code> is used to state that retrieval is ready and remind the user to inspect the exported chunks.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 22 · In [22]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;INDEXING COMPLETE&quot;)
+print(&quot;=&quot; * 70)
+
+print(&quot;Source document :&quot;, pdf_file)
+print(&quot;Number of chunks:&quot;, len(chunks))
+print(&quot;Vectors stored  :&quot;, index.ntotal)
+print(&quot;Chunk size      :&quot;, CHUNK_SIZE)
+print(&quot;Chunk overlap   :&quot;, CHUNK_OVERLAP)
+print(&quot;Embedding model :&quot;, EMBEDDING_MODEL_NAME)
+
+print(&quot;\nSaved files:&quot;)
+print(&quot;  &quot;, EXCEL_FILE)
+print(&quot;  &quot;, FAISS_FILE)
+print(&quot;  &quot;, CHUNKS_FILE)
+print(&quot;  &quot;, CONFIG_FILE)
+
+print(&quot;\nThe vector store is ready for retrieval.&quot;)
+print(
+    &quot;Inspect the downloaded Excel workbook to evaluate &quot;
+    &quot;the generated chunks.&quot;
+)</code></pre></details><pre class="nb-output">
+
+======================================================================
+INDEXING COMPLETE
+======================================================================
+Source document : IT_and_Business_Analytics (1).pdf
+Number of chunks: 55
+Vectors stored  : 55
+Chunk size      : 1500
+Chunk overlap   : 300
+Embedding model : all-MiniLM-L6-v2
+
+Saved files:
+   IT_and_Business_Analytics (1)_chunks_inspection.xlsx
+   rag_faiss.index
+   rag_chunks.pkl
+   rag_config.pkl
+
+The vector store is ready for retrieval.
+Inspect the downloaded Excel workbook to evaluate the generated chunks.
+</pre></section><section class="nb-markdown"><h2>Component II: Prompt and Retrieval</h2></section><section class="nb-markdown"><h4>1. IMPORT REQUIRED LIBRARIES</h4></section><section class="nb-markdown"><h4>Cell 1: Import Required Libraries</h4>
+<p>This cell&#x27;s purpose is to import the libraries needed for prompt construction and answer generation. These dependencies provide model and tokenizer loading, 4-bit quantization, tensor operations, and regular-expression cleanup. The tokenizer and model loader come from Transformers, while PyTorch supplies tensor and device operations.</p>
+<p><code>from transformers import </code> is used to import the Hugging Face tokenizer, causal-language-model loader, and bitsandbytes quantization configuration.</p>
+<p><code>import torch</code> and <code>import re</code> are used to import PyTorch for device and generation operations and re for text cleanup.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 23 · In [23]</summary><pre><code>from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig
+)
+
+import torch
+import re</code></pre></details></section><section class="nb-markdown"><h4>2. CHECK DEVICE</h4></section><section class="nb-markdown"><h4>Cell 2: Check Device</h4>
+<p>This cell&#x27;s purpose is to detect whether a CUDA GPU is available. The notebook&#x27;s 4-bit Qwen3-8B loading path is configured for a GPU; reporting the device early makes runtime requirements visible. The cell reports CPU when no CUDA GPU is available, but the later 4-bit loading cell requires a GPU in this notebook.</p>
+<p><code>device</code> and <code>if torch.cuda.is_available()</code> are used to choose cuda when PyTorch detects a GPU; otherwise label the device cpu.</p>
+<p><code>print(&quot;RAG PROMPT PROCESSING&quot;)</code> and <code>print(&quot;Device:&quot;, device)</code> are used to print the prompt-processing stage and the selected device.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 24 · In [24]</summary><pre><code>device = (
+    &quot;cuda&quot;
+    if torch.cuda.is_available()
+    else &quot;cpu&quot;
+)
+
+print(&quot;=&quot; * 70)
+print(&quot;RAG PROMPT PROCESSING&quot;)
+print(&quot;=&quot; * 70)
+
+print(&quot;Device:&quot;, device)</code></pre></details><pre class="nb-output">======================================================================
+RAG PROMPT PROCESSING
+======================================================================
+Device: cuda
+</pre></section><section class="nb-markdown"><h4>3. LOAD THE LOCAL LLM</h4></section><section class="nb-markdown"><h4>Cell 3: Load The Local LLM</h4>
+<p>This cell&#x27;s purpose is to load Qwen3-8B in 4-bit mode and set token limits. Quantization reduces GPU memory use, while the token budgets constrain prompt size and answer length. This notebook cell intentionally stops on CPU because this configured model-loading path is GPU-oriented. Model loading can take time because the weights must be downloaded and placed in memory; the notebook then uses the loaded model for all later questions.</p>
+<p><code>LLM_NAME = &quot;Qwen/Qwen3-8B&quot;</code> and <code>MAX_INPUT_TOKENS = 4096</code> are used to set the model ID, maximum prompt tokens, and maximum generated answer tokens.</p>
+<p><code>RESERVED_TOKEN_MARGIN = 64</code> is used to reserve a safety margin so chat formatting does not push the prompt past the model input budget.</p>
+<p><code>print(&quot;\nLoading language model:&quot;)</code> and <code>print(LLM_NAME)</code> are used to print which model is about to load.</p>
+<p><code>if not torch.cuda.is_available():</code> is used to fail early with a clear message if no CUDA GPU is available for this notebook configuration.</p>
+<p><code>compute_dtype</code> and <code>torch.bfloat16</code> are used to select a GPU compute type supported by the current hardware.</p>
+<p><code>quantization_config</code> and <code>load_in_4bit=True,</code> are used to configure 4-bit NF4 weights and double quantization using the selected compute type.</p>
+<p><code>tokenizer = AutoTokenizer.from_pretrained(LLM_NAME)</code> is used to load the matching tokenizer.</p>
+<p><code>llm</code> and <code>quantization_config=quantization_config,</code> are used to load Qwen3-8B with the quantization settings, the current compute dtype, and automatic device placement.</p>
+<p><code>llm.eval()</code> and <code>device = llm.get_input_embeddings().weight.device</code> are used to switch the model to evaluation mode, record its input device, and confirm loading.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 25 · In [25]</summary><pre><code>LLM_NAME = &quot;Qwen/Qwen3-8B&quot;
+
+MAX_INPUT_TOKENS = 4096
+MAX_NEW_TOKENS = 256
+
+# Reserve space within the input budget for safety.
+RESERVED_TOKEN_MARGIN = 64
+
+print(&quot;\nLoading language model:&quot;)
+print(LLM_NAME)
+
+if not torch.cuda.is_available():
+    raise RuntimeError(
+        &quot;Qwen3-8B needs a GPU runtime for this notebook. &quot;
+        &quot;In Google Colab, select Runtime &gt; Change runtime type &gt; T4 GPU, then rerun.&quot;
+    )
+
+compute_dtype = (
+    torch.bfloat16
+    if torch.cuda.is_bf16_supported()
+    else torch.float16
+)
+
+quantization_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type=&quot;nf4&quot;,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_compute_dtype=compute_dtype
+)
+
+tokenizer = AutoTokenizer.from_pretrained(LLM_NAME)
+
+llm = AutoModelForCausalLM.from_pretrained(
+    LLM_NAME,
+    quantization_config=quantization_config,
+    dtype=compute_dtype,
+    device_map=&quot;auto&quot;
+)
+llm.eval()
+device = llm.get_input_embeddings().weight.device
+
+print(&quot;Language model loaded.&quot;)</code></pre></details><pre class="nb-output">
+Loading language model:
+Qwen/Qwen3-8B
+</pre><pre class="nb-output">model.safetensors.index.json:   0%|          | 0.00/32.9k [00:00&lt;?, ?B/s]</pre><pre class="nb-output">Downloading bytes:           |  0.00B            </pre><pre class="nb-output">Reconstructing (incomplete total...): |          |  0.00B /  0.00B            </pre><pre class="nb-output">Fetching 5 files:   0%|          | 0/5 [00:00&lt;?, ?it/s]</pre><pre class="nb-output">Loading weights:   0%|          | 0/399 [00:00&lt;?, ?it/s]</pre><pre class="nb-output">generation_config.json:   0%|          | 0.00/239 [00:00&lt;?, ?B/s]</pre><pre class="nb-output">Language model loaded.
+</pre></section><section class="nb-markdown"><h4>4. DEFINE TOKEN COUNTING FUNCTION</h4></section><section class="nb-markdown"><h4>Cell 4: Define Token Counting Function</h4>
+<p>This cell&#x27;s purpose is to define a helper that counts tokens with the loaded tokenizer. Token counts, rather than character counts, determine whether text fits within the language model&#x27;s context limit. A sentence&#x27;s character count and token count can differ greatly, so the model&#x27;s limit must be checked in tokens.</p>
+<p><code>def count_tokens(text):</code> is used to define the helper for any input text.</p>
+<p><code>return len</code> and <code>tokenizer.encode</code> are used to tokenize without adding special tokens or truncating, then return the number of token IDs.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 26 · In [26]</summary><pre><code>def count_tokens(text):
+
+    return len(
+        tokenizer.encode(
+            text,
+            add_special_tokens=False,
+            truncation=False
+        )
+    )</code></pre></details></section><section class="nb-markdown"><h4>5. PRIORITIZE RETRIEVED DOCUMENTS</h4></section><section class="nb-markdown"><h4>Cell 5: Prioritize Retrieved Documents</h4>
+<p>This cell&#x27;s purpose is to keep retrieved documents ordered by similarity score. The prompt builder should use the strongest evidence first so the most relevant passages are less likely to be excluded by the token budget. Preserving the search order is especially useful when the prompt cannot fit all retrieved passages.</p>
+<p><code>def prioritize_documents(question, retrieved_documents):</code> is used to define the ranking helper and document that higher inner-product similarity means a closer match.</p>
+<p><code>return sorted</code> and <code>key=lambda result: result.get(&quot;score&quot;, float(&quot;-inf&quot;)),</code> are used to sort descending by score, treating a missing score as very low, and return the ordered results.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 27 · In [27]</summary><pre><code>def prioritize_documents(question, retrieved_documents):
+    &quot;&quot;&quot;
+    Preserve FAISS similarity ranking.
+
+    Assumes higher scores mean greater similarity,
+    as with normalized embeddings and IndexFlatIP.
+    &quot;&quot;&quot;
+
+    return sorted(
+        retrieved_documents,
+        key=lambda result: result.get(&quot;score&quot;, float(&quot;-inf&quot;)),
+        reverse=True
+    )</code></pre></details></section><section class="nb-markdown"><h4>6. DEFINE THE TOKEN-LIMITED RAG PROMPT</h4></section><section class="nb-markdown"><h4>ECell 6: Define The Token-Limited RAG Prompt</h4>
+<p>This cell&#x27;s purpose is to build a grounded prompt while respecting the model&#x27;s input-token budget. This is the core grounding step: it keeps the inquiry and source evidence together, prioritizes better matches, and prevents silent truncation from removing the question or citations. Page and chunk labels remain attached to the evidence, making the final prompt easier to audit.</p>
+<p><code>create_rag_prompt</code> is used to define the inputs and state that evidence is trimmed only at token boundaries.</p>
+<p><code>ranked_documents</code> is used to order retrieved chunks by relevance before allocating the context budget.</p>
+<p><code>#instruction = (</code> and <code>#    &quot;Answer the question using only the evidence below. &quot;</code> are inactive. The notebook keeps these older instructions for reference, but they do not affect the current prompt.</p>
+<p><code>instruction</code> is used to set the active instruction: answer only from JRU evidence, keep BSIT and BSIT-BA distinct, avoid unsupported advice, and use the specified fallback when evidence is insufficient.</p>
+<p><code>prompt_prefix</code> and <code>f&quot;Question: {question}\n\n&quot;</code> are used to place the question and instructions before an Evidence section and reserve an Answer suffix.</p>
+<p><code>prefix_tokens</code> and <code>add_special_tokens=False</code> are used to tokenize the fixed prompt prefix and suffix so their cost can be subtracted first.</p>
+<p><code>available_context_tokens</code> and <code>- len(prefix_tokens)</code> are used to calculate the remaining evidence budget, including a safety margin, and stop with a useful error if no evidence can fit.</p>
+<p><code>selected_parts = []</code> and <code>remaining_tokens = available_context_tokens</code> are used to initialize selected evidence and attach page and chunk labels to each source passage.</p>
+<p><code>source_tokens</code> and <code>add_special_tokens=False</code> are used to tokenize each passage and account for separators between passages.</p>
+<p><code>included_tokens = source_tokens[</code> and <code>:tokens_available</code> are used to include a whole passage when possible; otherwise truncate at a token boundary and stop adding later passages.</p>
+<p><code>context = &quot;\n\n&quot;.join(selected_parts)</code> and <code>prompt_text</code> are used to join selected passages and assemble the user-facing prompt text.</p>
+<p><code>prompt</code> and <code>[{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: prompt_text}],</code> are used to apply Qwen3&#x27;s chat template and disable its thinking mode for concise inquiry answers.</p>
+<p><code>final_token_count = count_tokens(prompt)</code> and <code>if final_token_count &gt; MAX_INPUT_TOKENS:</code> are used to count the fully formatted prompt and raise an error if it exceeds the configured input limit.</p>
+<p><code>print(&quot;\n--- PROMPT DIAGNOSTICS ---&quot;)</code> and <code>print(&quot;Original question:&quot;, question)</code> are used to print token-budget diagnostics for troubleshooting.</p>
+<p><code>print(&quot;\n--- SELECTED EVIDENCE ---&quot;)</code> and <code>for i, part in enumerate(selected_parts, start=1):</code> are used to display the evidence actually included and return the final model-ready prompt.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 28 · In [28]</summary><pre><code>def create_rag_prompt(
+    question,
+    retrieved_documents
+):
+    &quot;&quot;&quot;
+    Build a prompt that preserves the question and includes
+    as much relevant retrieved evidence as the input budget
+    allows.
+
+    Context is trimmed only at token boundaries.
+    &quot;&quot;&quot;
+
+    ranked_documents = prioritize_documents(
+        question,
+        retrieved_documents
+    )
+
+    #instruction = (
+    #    &quot;Answer the question using only the evidence below. &quot;
+    #    &quot;Give a concise answer. Do not invent information. &quot;
+    #    &#x27;If the evidence does not support an answer, say: &#x27;
+    #    &#x27;&quot;I cannot find the answer in the provided document.&quot;&#x27;
+    #)
+
+    instruction = (
+        &quot;Answer using only the supplied José Rizal University evidence. The inquiry scope &quot;
+        &quot;is limited to the Bachelor of Science in Information Technology (BSIT) and BSIT &quot;
+        &quot;with Specialization in Business Analytics (BSIT-BA). Explain only details supported &quot;
+        &quot;by the evidence, such as program descriptions, subjects, curriculum structure, &quot;
+        &quot;course descriptions, and stated prerequisites. Keep program names, course codes, &quot;
+        &quot;and school-year labels accurate. Clearly distinguish BSIT from BSIT-BA. The source &quot;
+        &quot;may describe electives for other IT tracks; do not present those as required BSIT &quot;
+        &quot;or BSIT-BA courses unless the curriculum evidence explicitly says so. Do not invent &quot;
+        &quot;facts, use outside knowledge, make admission-eligibility decisions, or claim a &quot;
+        &quot;program is personally suitable for the user. If the evidence does not answer the &quot;
+        &quot;question, respond exactly: &quot;
+        &quot;&#x27;I cannot find the answer in the provided document.&#x27;&quot;
+    )
+
+    # Keep the question near the beginning.
+    prompt_prefix = (
+        f&quot;Question: {question}\n\n&quot;
+        f&quot;{instruction}\n\n&quot;
+        &quot;Evidence:\n&quot;
+    )
+
+    prompt_suffix = &quot;\n\nAnswer:&quot;
+
+    # Tokenize the fixed parts first.
+    prefix_tokens = tokenizer.encode(
+        prompt_prefix,
+        add_special_tokens=False
+    )
+
+    suffix_tokens = tokenizer.encode(
+        prompt_suffix,
+        add_special_tokens=False
+    )
+
+    # Keep the final prompt safely within the model limit.
+    available_context_tokens = (
+        MAX_INPUT_TOKENS
+        - len(prefix_tokens)
+        - len(suffix_tokens)
+        - RESERVED_TOKEN_MARGIN
+        - 1  # Account for a possible special token.
+    )
+
+    if available_context_tokens &lt;= 0:
+        raise ValueError(
+            &quot;The question and instructions leave no room &quot;
+            &quot;for retrieved evidence. Shorten the question.&quot;
+        )
+
+    selected_parts = []
+    remaining_tokens = available_context_tokens
+
+    for result in ranked_documents:
+
+        if remaining_tokens &lt;= 0:
+            break
+
+        source_text = (
+            f&quot;[Page {result[&#x27;page&#x27;]}, &quot;
+            f&quot;Chunk {result[&#x27;chunk_id&#x27;]}]\n&quot;
+            f&quot;{result[&#x27;text&#x27;]}&quot;
+        )
+
+        # Tokenize each source separately.
+        source_tokens = tokenizer.encode(
+            source_text,
+            add_special_tokens=False
+        )
+
+        separator_tokens = (
+            tokenizer.encode(
+                &quot;\n\n&quot;,
+                add_special_tokens=False
+            )
+            if selected_parts
+            else []
+        )
+
+        tokens_available = (
+            remaining_tokens - len(separator_tokens)
+        )
+
+        if tokens_available &lt;= 0:
+            break
+
+        # Include the full chunk when it fits.
+        # Otherwise, retain the beginning of the chunk.
+        included_tokens = source_tokens[
+            :tokens_available
+        ]
+
+        if not included_tokens:
+            continue
+
+        included_text = tokenizer.decode(
+            included_tokens,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )
+
+        selected_parts.append(included_text)
+
+        remaining_tokens -= (
+            len(separator_tokens)
+            + len(included_tokens)
+        )
+
+        # Stop if this chunk had to be truncated.
+        if len(included_tokens) &lt; len(source_tokens):
+            break
+
+    context = &quot;\n\n&quot;.join(selected_parts)
+
+    prompt_text = (
+        prompt_prefix
+        + context
+        + prompt_suffix
+    )
+
+    # Format the user prompt with Qwen3&#x27;s chat template in non-thinking mode.
+    prompt = tokenizer.apply_chat_template(
+        [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: prompt_text}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False
+    )
+
+    # Final check counts the full chat-formatted prompt.
+    final_token_count = count_tokens(prompt)
+
+    if final_token_count &gt; MAX_INPUT_TOKENS:
+        raise ValueError(
+            f&quot;Prompt contains {final_token_count} tokens, &quot;
+            f&quot;exceeding the {MAX_INPUT_TOKENS}-token limit. &quot;
+            &quot;Reduce the context budget.&quot;
+        )
+
+    print(&quot;\n--- PROMPT DIAGNOSTICS ---&quot;)
+    print(&quot;Original question:&quot;, question)
+    print(&quot;Retrieved chunks:&quot;, len(retrieved_documents))
+    print(&quot;Chunks included:&quot;, len(selected_parts))
+    print(&quot;Final prompt tokens:&quot;, final_token_count)
+    print(&quot;Input token limit:&quot;, MAX_INPUT_TOKENS)
+
+    print(&quot;\n--- SELECTED EVIDENCE ---&quot;)
+
+    for i, part in enumerate(selected_parts, start=1):
+      print(f&quot;\nEvidence {i}:&quot;)
+      print(part)
+
+    return prompt</code></pre></details></section><section class="nb-markdown"><h4>7. DEFINE ANSWER GENERATION FUNCTION</h4></section><section class="nb-markdown"><h4>Cell 7: Define Answer Generation Function</h4>
+<p>This cell&#x27;s purpose is to generate an answer from the grounded prompt. This function checks the actual input length, avoids backpropagation during inference, and decodes only newly generated answer tokens. A causal model returns the input prompt followed by new tokens; slicing removes the repeated prompt from the displayed answer.</p>
+<p><code>generate_answer</code> and <code>max_new_tokens=MAX_NEW_TOKENS</code> are used to define the generation helper and document its no-silent-truncation behavior.</p>
+<p><code>inputs</code> and <code>return_tensors=&quot;pt&quot;,</code> are used to tokenize the prompt into tensors without truncation or extra special tokens.</p>
+<p><code>input_length = inputs[&quot;input_ids&quot;].shape[1]</code> and <code>print(&quot;\n--- GENERATION DIAGNOSTICS ---&quot;)</code> are used to measure input length, print diagnostics, and reject prompts over the configured limit.</p>
+<p><code>inputs = {</code> and <code>key: value.to(device)</code> are used to move tokenizer tensors to the device used by the loaded model.</p>
+<p><code>with torch.no_grad():</code> and <code>outputs</code> are used to disable gradient tracking and generate a deterministic response with configured length and stop tokens.</p>
+<p><code>generated_tokens = outputs[0, input_length:]</code> and <code>answer</code> are used to remove the prompt portion from the output and decode only the model&#x27;s new tokens.</p>
+<p><code>if not answer:</code> and <code>return answer</code> are used to return a helpful message for empty output; otherwise return the answer text.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 29 · In [29]</summary><pre><code>def generate_answer(
+    prompt,
+    max_new_tokens=MAX_NEW_TOKENS
+):
+    &quot;&quot;&quot;
+    Generate an answer without silently truncating the prompt.
+    &quot;&quot;&quot;
+
+    inputs = tokenizer(
+        prompt,
+        return_tensors=&quot;pt&quot;,
+        truncation=False,
+        add_special_tokens=False
+    )
+
+    input_length = inputs[&quot;input_ids&quot;].shape[1]
+
+    print(&quot;\n--- GENERATION DIAGNOSTICS ---&quot;)
+    print(&quot;Actual input tokens:&quot;, input_length)
+    print(&quot;Maximum input tokens:&quot;, MAX_INPUT_TOKENS)
+
+    if input_length &gt; MAX_INPUT_TOKENS:
+        raise ValueError(
+            f&quot;Input contains {input_length} tokens, &quot;
+            f&quot;but the model limit is {MAX_INPUT_TOKENS}.&quot;
+        )
+
+    # Move model inputs to the selected device.
+    inputs = {
+        key: value.to(device)
+        for key, value in inputs.items()
+    }
+
+    # Generate deterministically.
+    with torch.no_grad():
+
+        outputs = llm.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            num_beams=1,
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id
+        )
+
+    # Causal language models return the prompt followed by the new answer.
+    generated_tokens = outputs[0, input_length:]
+    answer = tokenizer.decode(
+        generated_tokens,
+        skip_special_tokens=True
+    ).strip()
+
+    if not answer:
+        return (
+            &quot;The model generated an empty answer. &quot;
+            &quot;Inspect the prompt and retrieved evidence.&quot;
+        )
+
+    return answer</code></pre></details></section><section class="nb-markdown"><h4>8. DEFINE COMPLETE RAG QUERY FUNCTION</h4></section><section class="nb-markdown"><h4>Cell 8: Define Complete RAG Query Function</h4>
+<p>This cell&#x27;s purpose is to connect retrieval, evidence selection, and generation into one RAG function. A single function gives the interactive loop a consistent workflow and a predictable return value for each inquiry. The function returns the answer together with the sources and prompt, so the interactive interface can show how it was produced.</p>
+<p><code>def rag_query(question, top_k=3):</code> is used to define the function and document the four-stage RAG sequence and returned values.</p>
+<p><code>question = question.strip()</code> and <code>if not question:</code> are used to trim and validate the question; return a friendly prompt instead of proceeding with empty input.</p>
+<p><code>retrieved_documents</code> and <code>top_k=top_k</code> are used to retrieve the most relevant chunks using the requested Top K.</p>
+<p><code>if not retrieved_documents:</code> and <code>[],</code> are used to return the grounded fallback when retrieval finds no evidence.</p>
+<p><code>prompt</code> is used to build a token-limited prompt from the question and retrieved sources.</p>
+<p><code>answer = generate_answer(prompt)</code> and <code>if not answer or not answer.strip():</code> are used to generate an answer and replace an empty response with a useful diagnostic message.</p>
+<p><code>answer.strip(),</code> is used to return the answer, source records, and exact prompt for display or inspection.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 30 · In [30]</summary><pre><code>def rag_query(question, top_k=3):
+    &quot;&quot;&quot;
+    General-purpose RAG question-answering function.
+
+    Workflow:
+    1. Retrieve relevant document chunks.
+    2. Build a token-limited prompt.
+    3. Generate an answer using the language model.
+    4. Return the answer, retrieved sources, and prompt.
+    &quot;&quot;&quot;
+
+    # STEP 1: Validate the question.
+    question = question.strip()
+
+    if not question:
+        return (
+            &quot;Please enter a valid question.&quot;,
+            [],
+            &quot;&quot;
+        )
+
+    # STEP 2: Retrieve relevant document chunks.
+    retrieved_documents = retrieve_documents(
+        question,
+        top_k=top_k
+    )
+
+    # STEP 3: Handle cases where no evidence is retrieved.
+    if not retrieved_documents:
+        return (
+            &quot;I cannot find the answer in the provided document.&quot;,
+            [],
+            &quot;&quot;
+        )
+
+    # STEP 4: Construct the token-limited RAG prompt.
+    prompt = create_rag_prompt(
+        question,
+        retrieved_documents
+    )
+
+    # STEP 5: Generate an answer from the retrieved evidence.
+    answer = generate_answer(prompt)
+
+    # STEP 6: Handle an empty model response.
+    if not answer or not answer.strip():
+        answer = (
+            &quot;The model could not generate an answer. &quot;
+            &quot;Please review the retrieved evidence.&quot;
+        )
+
+    # STEP 7: Return the results.
+    return (
+        answer.strip(),
+        retrieved_documents,
+        prompt
+    )</code></pre></details></section><section class="nb-markdown"><h4>9. CONTINUOUS QUESTION-ANSWER LOOP</h4></section><section class="nb-markdown"><h4>Cell 9: Continuous Question-Answer Loop</h4>
+<p>This cell&#x27;s purpose is to run a continuous question-and-answer session for the indexed document. The loop lets users ask multiple inquiries, inspect the evidence and prompt used for the latest answer, and exit without rerunning model setup. The special commands let a user inspect the last answer&#x27;s evidence without generating another answer.</p>
+<p><code>print(&quot;CONTINUOUS RAG QUESTION ANSWERING&quot;)</code> and <code>print(&quot;Ask questions about the indexed document.&quot;)</code> are used to print usage instructions, including the exit, sources, and prompt commands.</p>
+<p><code>last_answer = None</code> and <code>last_sources = []</code> are used to initialize storage for the latest answer, retrieved sources, and prompt.</p>
+<p><code>while True:</code> and <code>user_question</code> are used to repeat until exit and read each user&#x27;s question.</p>
+<p><code>if user_question.lower() == &quot;exit&quot;:</code> and <code>print(&quot;\nRAG session terminated.&quot;)</code> are used to handle the exit command and terminate the session cleanly.</p>
+<p><code>if not user_question:</code> and <code>print(&quot;Please enter a question.&quot;)</code> are used to ignore blank input and return to the prompt for a valid question.</p>
+<p><code>if user_question.lower() == &quot;sources&quot;:</code> and <code>if not last_sources:</code> are used to implement the sources command, including a no-history check and display of ranks, pages, chunk IDs, scores, and text.</p>
+<p><code>if user_question.lower() == &quot;prompt&quot;:</code> and <code>if last_prompt is None:</code> are used to implement the prompt command and show the last prompt if one exists.</p>
+<p><code>answer, retrieved_documents, prompt</code> and <code>top_k=TOP_K</code> handle ordinary user questions. For ordinary inquiries, call the RAG pipeline and save the latest answer, evidence, and prompt.</p>
+<p><code>print(&quot;RAG ANSWER&quot;)</code> and <code>print(answer)</code> are used to display the generated answer.</p>
+<p><code>print(&quot;RETRIEVED SOURCES&quot;)</code> and <code>for result in retrieved_documents:</code> are used to display each retrieved source with rank, page, chunk ID, score, and text.</p>
+<p><code>print(&quot;RAG PROMPT SENT TO LLM&quot;)</code> and <code>print(prompt)</code> are used to display the exact prompt sent to the language model for transparency.</p>
+<p><code>except Exception as e:</code> and <code>print(&quot;\nERROR:&quot;)</code> are used to catch query-time errors, show the error message, and keep the failure understandable.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 31 · In [31]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;CONTINUOUS RAG QUESTION ANSWERING&quot;)
+print(&quot;=&quot; * 70)
+
+print(&quot;Ask questions about the indexed document.&quot;)
+print(&quot;Type &#x27;exit&#x27; to terminate.&quot;)
+print(&quot;Type &#x27;sources&#x27; to display sources from the last query.&quot;)
+print(&quot;Type &#x27;prompt&#x27; to display the last generated prompt.&quot;)
+
+
+# Store the most recent query results.
+last_answer = None
+last_sources = []
+last_prompt = None
+
+
+while True:
+
+    print(&quot;\n&quot;)
+
+    user_question = input(
+        &quot;Question: &quot;
+    ).strip()
+
+    # --------------------------------------------------------
+    # EXIT CONDITION
+    # --------------------------------------------------------
+
+    if user_question.lower() == &quot;exit&quot;:
+
+        print(&quot;\nRAG session terminated.&quot;)
+        break
+
+    # --------------------------------------------------------
+    # IGNORE EMPTY QUESTIONS
+    # --------------------------------------------------------
+
+    if not user_question:
+
+        print(&quot;Please enter a question.&quot;)
+        continue
+
+    # --------------------------------------------------------
+    # SPECIAL COMMAND: SOURCES
+    # --------------------------------------------------------
+
+    if user_question.lower() == &quot;sources&quot;:
+
+        if not last_sources:
+            print(&quot;No previous query sources are available.&quot;)
+            continue
+
+        print(&quot;\n&quot; + &quot;=&quot; * 70)
+        print(&quot;SOURCES FROM LAST QUERY&quot;)
+        print(&quot;=&quot; * 70)
+
+        for result in last_sources:
+
+            print(
+                f&quot;\nRank {result[&#x27;rank&#x27;]} | &quot;
+                f&quot;Page {result[&#x27;page&#x27;]} | &quot;
+                f&quot;Chunk {result[&#x27;chunk_id&#x27;]} | &quot;
+                f&quot;Similarity {result[&#x27;score&#x27;]:.4f}&quot;
+            )
+
+            print(&quot;-&quot; * 70)
+            print(result[&quot;text&quot;])
+
+        continue
+
+    # --------------------------------------------------------
+    # SPECIAL COMMAND: PROMPT
+    # --------------------------------------------------------
+
+    if user_question.lower() == &quot;prompt&quot;:
+
+        if last_prompt is None:
+            print(&quot;No previous query prompt is available.&quot;)
+            continue
+
+        print(&quot;\n&quot; + &quot;=&quot; * 70)
+        print(&quot;LAST RAG PROMPT&quot;)
+        print(&quot;=&quot; * 70)
+
+        print(last_prompt)
+
+        continue
+
+    # --------------------------------------------------------
+    # PROCESS QUESTION
+    # --------------------------------------------------------
+
+    try:
+
+        answer, retrieved_documents, prompt = rag_query(
+            user_question,
+            top_k=TOP_K
+        )
+
+        last_answer = answer
+        last_sources = retrieved_documents
+        last_prompt = prompt
+
+        # ----------------------------------------------------
+        # DISPLAY ANSWER
+        # ----------------------------------------------------
+
+        print(&quot;\n&quot;)
+        print(&quot;=&quot; * 70)
+        print(&quot;RAG ANSWER&quot;)
+        print(&quot;=&quot; * 70)
+
+        print(answer)
+
+        # ----------------------------------------------------
+        # DISPLAY RETRIEVED SOURCES
+        # ----------------------------------------------------
+
+        print(&quot;\n&quot;)
+        print(&quot;=&quot; * 70)
+        print(&quot;RETRIEVED SOURCES&quot;)
+        print(&quot;=&quot; * 70)
+
+        for result in retrieved_documents:
+
+            print(
+                f&quot;\n[{result[&#x27;rank&#x27;]}] &quot;
+                f&quot;Page {result[&#x27;page&#x27;]} &quot;
+                f&quot;| Chunk {result[&#x27;chunk_id&#x27;]} &quot;
+                f&quot;| Similarity {result[&#x27;score&#x27;]:.4f}&quot;
+            )
+
+            print(&quot;-&quot; * 70)
+            print(result[&quot;text&quot;])
+
+        # ----------------------------------------------------
+        # DISPLAY PROMPT
+        # ----------------------------------------------------
+
+        print(&quot;\n&quot;)
+        print(&quot;=&quot; * 70)
+        print(&quot;RAG PROMPT SENT TO LLM&quot;)
+        print(&quot;=&quot; * 70)
+
+        print(prompt)
+
+    except Exception as e:
+
+        print(&quot;\nERROR:&quot;)
+        print(str(e))
+
+        print(&quot;\nThe question could not be processed.&quot;)</code></pre></details><pre class="nb-output">
+
+======================================================================
+CONTINUOUS RAG QUESTION ANSWERING
+======================================================================
+Ask questions about the indexed document.
+Type &#x27;exit&#x27; to terminate.
+Type &#x27;sources&#x27; to display sources from the last query.
+Type &#x27;prompt&#x27; to display the last generated prompt.
+
+
+Question: How many total units does the BSIT curriculum list?
+
+--- PROMPT DIAGNOSTICS ---
+Original question: How many total units does the BSIT curriculum list?
+Retrieved chunks: 3
+Chunks included: 3
+Final prompt tokens: 1252
+Input token limit: 4096
+
+--- SELECTED EVIDENCE ---
+
+Evidence 1:
+[Page 3, Chunk 4]
+Page 92 THIRD YEAR First Semester Units Second Semester Units ITC C309 Presentation Skills for IT 3 CPE C204 Technopreneurship 101 3 ITC C311 Technical Writing for IT 3 ITC C302 System Integrated &amp; Arch 1 3 ITC C313 Project Management 3 ITC C306 Network Technologies 2 3 ITC C305 Network Technologies 1 3 ITC C304 Information Security 2 3 ITC C303 Information Security 1 3 ITC C310 IT Project 1 3 ITC C301 Integrated Programming &amp;Tech 1 3 ITC C506 ITE Elective 3 3 ITC C503 ITE Elective 2 3 ITC C312 Software Design &amp; Implementation 3 21 21 FOURTH YEAR First Semester Units Second Semester Units ITC C401 Sys Admin &amp; Maintenance 3 ITC C402 Internship 6 ITC C403 IT Project 2 3 EMC C307 Foundation of Business Analytics 3 ITC C508 ITE Elective 4 3 12 6 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY (BSIT) Units Units 1. Technical Courses a. IT Core Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 48 Discrete Structures Quantitative Techniques for IT Human-Computer Interaction 3 3 3 Information Security 1 Information Security 2 Advanced Database Management Systems Integrative Programming and Technologies 1 Network Technologies 1 Network Technologies 2 System Administration and Maintenance System Integration and Arch 1 Social and Professional Issues in IT IT Project 1
+
+Evidence 2:
+[Page 7, Chunk 12]
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+Evidence 3:
+[Page 1, Chunk 0]
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+--- GENERATION DIAGNOSTICS ---
+Actual input tokens: 1252
+Maximum input tokens: 4096
+
+
+======================================================================
+RAG ANSWER
+======================================================================
+Answer: The BSIT curriculum lists a total of 18 units for IT Core Courses, 48 units for IT Professional Courses, and 18 units for IT Domain Courses, totaling 74 units. The BSIT-BA curriculum lists a total of 18 units for IT Common Courses, 51 units for IT Professional Courses, 18 units for IT Domain Courses, and 12 units for Professional Elective Courses, totaling 99 units.
+
+
+======================================================================
+RETRIEVED SOURCES
+======================================================================
+
+[1] Page 3 | Chunk 4 | Similarity 0.4578
+----------------------------------------------------------------------
+Page 92 THIRD YEAR First Semester Units Second Semester Units ITC C309 Presentation Skills for IT 3 CPE C204 Technopreneurship 101 3 ITC C311 Technical Writing for IT 3 ITC C302 System Integrated &amp; Arch 1 3 ITC C313 Project Management 3 ITC C306 Network Technologies 2 3 ITC C305 Network Technologies 1 3 ITC C304 Information Security 2 3 ITC C303 Information Security 1 3 ITC C310 IT Project 1 3 ITC C301 Integrated Programming &amp;Tech 1 3 ITC C506 ITE Elective 3 3 ITC C503 ITE Elective 2 3 ITC C312 Software Design &amp; Implementation 3 21 21 FOURTH YEAR First Semester Units Second Semester Units ITC C401 Sys Admin &amp; Maintenance 3 ITC C402 Internship 6 ITC C403 IT Project 2 3 EMC C307 Foundation of Business Analytics 3 ITC C508 ITE Elective 4 3 12 6 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY (BSIT) Units Units 1. Technical Courses a. IT Core Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 48 Discrete Structures Quantitative Techniques for IT Human-Computer Interaction 3 3 3 Information Security 1 Information Security 2 Advanced Database Management Systems Integrative Programming and Technologies 1 Network Technologies 1 Network Technologies 2 System Administration and Maintenance System Integration and Arch 1 Social and Professional Issues in IT IT Project 1
+
+[2] Page 7 | Chunk 12 | Similarity 0.4346
+----------------------------------------------------------------------
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+[3] Page 1 | Chunk 0 | Similarity 0.3896
+----------------------------------------------------------------------
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+
+======================================================================
+RAG PROMPT SENT TO LLM
+======================================================================
+&lt;|im_start|&gt;user
+Question: How many total units does the BSIT curriculum list?
+
+Answer using only the supplied José Rizal University evidence. The inquiry scope is limited to the Bachelor of Science in Information Technology (BSIT) and BSIT with Specialization in Business Analytics (BSIT-BA). Explain only details supported by the evidence, such as program descriptions, subjects, curriculum structure, course descriptions, and stated prerequisites. Keep program names, course codes, and school-year labels accurate. Clearly distinguish BSIT from BSIT-BA. The source may describe electives for other IT tracks; do not present those as required BSIT or BSIT-BA courses unless the curriculum evidence explicitly says so. Do not invent facts, use outside knowledge, make admission-eligibility decisions, or claim a program is personally suitable for the user. If the evidence does not answer the question, respond exactly: &#x27;I cannot find the answer in the provided document.&#x27;
+
+Evidence:
+[Page 3, Chunk 4]
+Page 92 THIRD YEAR First Semester Units Second Semester Units ITC C309 Presentation Skills for IT 3 CPE C204 Technopreneurship 101 3 ITC C311 Technical Writing for IT 3 ITC C302 System Integrated &amp; Arch 1 3 ITC C313 Project Management 3 ITC C306 Network Technologies 2 3 ITC C305 Network Technologies 1 3 ITC C304 Information Security 2 3 ITC C303 Information Security 1 3 ITC C310 IT Project 1 3 ITC C301 Integrated Programming &amp;Tech 1 3 ITC C506 ITE Elective 3 3 ITC C503 ITE Elective 2 3 ITC C312 Software Design &amp; Implementation 3 21 21 FOURTH YEAR First Semester Units Second Semester Units ITC C401 Sys Admin &amp; Maintenance 3 ITC C402 Internship 6 ITC C403 IT Project 2 3 EMC C307 Foundation of Business Analytics 3 ITC C508 ITE Elective 4 3 12 6 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY (BSIT) Units Units 1. Technical Courses a. IT Core Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 48 Discrete Structures Quantitative Techniques for IT Human-Computer Interaction 3 3 3 Information Security 1 Information Security 2 Advanced Database Management Systems Integrative Programming and Technologies 1 Network Technologies 1 Network Technologies 2 System Administration and Maintenance System Integration and Arch 1 Social and Professional Issues in IT IT Project 1
+
+[Page 7, Chunk 12]
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+[Page 1, Chunk 0]
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+Answer:&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+&lt;think&gt;
+
+&lt;/think&gt;
+
+
+
+
+Question: Which BSIT courses focus on programming or software development, and when are they taken?
+
+--- PROMPT DIAGNOSTICS ---
+Original question: Which BSIT courses focus on programming or software development, and when are they taken?
+Retrieved chunks: 3
+Chunks included: 3
+Final prompt tokens: 1138
+Input token limit: 4096
+
+--- SELECTED EVIDENCE ---
+
+Evidence 1:
+[Page 1, Chunk 0]
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+Evidence 2:
+[Page 7, Chunk 12]
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+Evidence 3:
+[Page 10, Chunk 18]
+Page 200 familiarity with computers is beneficial. Basic programming concepts include logic formulation, basic syntax, use of different data types and operators, iteration and decision making, and functions. Lecture: 2 units. Laboratory: 1 unit. Credit: 3 units Prerequisite: None ITC C105. Computer Programming 1. (For BSIT-BA students only). This course provides problem -solving and computer programming skills for students with no prior experience in the area of programming. Students will be using Python, a high -level programming language, to learn the fundamentals of computer programming inclu ding how to write, compile and execute programs. Some familiarity with computers is beneficial. Basic programming concepts include basic syntax, use of different data types and operators, iteration and decision making, and function. Advance concepts such as GUI and scripts and introduction to data science will also be discussed. Lecture: 2 units. Laboratory: 1 unit . Credit: 3 units Prerequisite: None ITC C105. Computer Programming 1. (For BSEMC students only). This course provides problem - solving and computer programming skills for students with no prior experience in the area of programming. Students will be using C++ to learn the fundamentals of computer programming including program logic formulation, how to write, compile and execute programs. Basic programming concepts include basic syntax, use of different data types and operators, iteration and decision making, and functions
+
+--- GENERATION DIAGNOSTICS ---
+Actual input tokens: 1138
+Maximum input tokens: 4096
+
+
+======================================================================
+RAG ANSWER
+======================================================================
+The Bachelor of Science in Information Technology (BSIT) and the BSIT with Specialization in Business Analytics (BSIT-BA) both include courses that focus on programming or software development. These courses are taken during the first and second years of the program.
+
+For the BSIT program, the courses that focus on programming or software development include:
+
+- Fundamentals of Information Technology
+- Computer Programming 1
+- Computer Programming 2
+- Database Fundamentals
+- Applications Development and Emerging Technologies
+- Data Structures and Algorithm
+
+These courses are typically taken in the first and second years of the program. The course &quot;Computer Programming 1&quot; is specifically mentioned as being taken in the first year, with no prerequisite. &quot;Computer Programming 2&quot; is also part of the curriculum and is likely taken in the second year, though no specific year is mentioned for it.
+
+For the BSIT-BA program, the courses that focus on programming or software development include:
+
+- Fundamentals of Information Technology
+- Computer Programming 1 (for BSIT-BA students only)
+- Computer Programming 2
+- Database Fundamentals
+- Applications Development and Emerging Technologies
+- Data Structures and Algorithm
+- Integrative Programming &amp; Technologies 1
+- Quantitative Techniques for IT
+- Data
+
+
+======================================================================
+RETRIEVED SOURCES
+======================================================================
+
+[1] Page 1 | Chunk 0 | Similarity 0.5670
+----------------------------------------------------------------------
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+[2] Page 7 | Chunk 12 | Similarity 0.5449
+----------------------------------------------------------------------
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+[3] Page 10 | Chunk 18 | Similarity 0.5198
+----------------------------------------------------------------------
+Page 200 familiarity with computers is beneficial. Basic programming concepts include logic formulation, basic syntax, use of different data types and operators, iteration and decision making, and functions. Lecture: 2 units. Laboratory: 1 unit. Credit: 3 units Prerequisite: None ITC C105. Computer Programming 1. (For BSIT-BA students only). This course provides problem -solving and computer programming skills for students with no prior experience in the area of programming. Students will be using Python, a high -level programming language, to learn the fundamentals of computer programming inclu ding how to write, compile and execute programs. Some familiarity with computers is beneficial. Basic programming concepts include basic syntax, use of different data types and operators, iteration and decision making, and function. Advance concepts such as GUI and scripts and introduction to data science will also be discussed. Lecture: 2 units. Laboratory: 1 unit . Credit: 3 units Prerequisite: None ITC C105. Computer Programming 1. (For BSEMC students only). This course provides problem - solving and computer programming skills for students with no prior experience in the area of programming. Students will be using C++ to learn the fundamentals of computer programming including program logic formulation, how to write, compile and execute programs. Basic programming concepts include basic syntax, use of different data types and operators, iteration and decision making, and functions
+
+
+======================================================================
+RAG PROMPT SENT TO LLM
+======================================================================
+&lt;|im_start|&gt;user
+Question: Which BSIT courses focus on programming or software development, and when are they taken?
+
+Answer using only the supplied José Rizal University evidence. The inquiry scope is limited to the Bachelor of Science in Information Technology (BSIT) and BSIT with Specialization in Business Analytics (BSIT-BA). Explain only details supported by the evidence, such as program descriptions, subjects, curriculum structure, course descriptions, and stated prerequisites. Keep program names, course codes, and school-year labels accurate. Clearly distinguish BSIT from BSIT-BA. The source may describe electives for other IT tracks; do not present those as required BSIT or BSIT-BA courses unless the curriculum evidence explicitly says so. Do not invent facts, use outside knowledge, make admission-eligibility decisions, or claim a program is personally suitable for the user. If the evidence does not answer the question, respond exactly: &#x27;I cannot find the answer in the provided document.&#x27;
+
+Evidence:
+[Page 1, Chunk 0]
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+[Page 7, Chunk 12]
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+[Page 10, Chunk 18]
+Page 200 familiarity with computers is beneficial. Basic programming concepts include logic formulation, basic syntax, use of different data types and operators, iteration and decision making, and functions. Lecture: 2 units. Laboratory: 1 unit. Credit: 3 units Prerequisite: None ITC C105. Computer Programming 1. (For BSIT-BA students only). This course provides problem -solving and computer programming skills for students with no prior experience in the area of programming. Students will be using Python, a high -level programming language, to learn the fundamentals of computer programming inclu ding how to write, compile and execute programs. Some familiarity with computers is beneficial. Basic programming concepts include basic syntax, use of different data types and operators, iteration and decision making, and function. Advance concepts such as GUI and scripts and introduction to data science will also be discussed. Lecture: 2 units. Laboratory: 1 unit . Credit: 3 units Prerequisite: None ITC C105. Computer Programming 1. (For BSEMC students only). This course provides problem - solving and computer programming skills for students with no prior experience in the area of programming. Students will be using C++ to learn the fundamentals of computer programming including program logic formulation, how to write, compile and execute programs. Basic programming concepts include basic syntax, use of different data types and operators, iteration and decision making, and functions
+
+Answer:&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+&lt;think&gt;
+
+&lt;/think&gt;
+
+
+
+
+Question: Which BSIT-BA courses relate to collecting, managing, analyzing, and applying data? Include their listed year or semester.
+
+--- PROMPT DIAGNOSTICS ---
+Original question: Which BSIT-BA courses relate to collecting, managing, analyzing, and applying data? Include their listed year or semester.
+Retrieved chunks: 3
+Chunks included: 3
+Final prompt tokens: 1124
+Input token limit: 4096
+
+--- SELECTED EVIDENCE ---
+
+Evidence 1:
+[Page 7, Chunk 12]
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+Evidence 2:
+[Page 5, Chunk 8]
+Page 94 PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT) major in Business Analytics, the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Business Analytics program; 2. become effective collaborators and innovators in analytics, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life -long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT major in Business Analytics program shall be able to: a. understand data management concepts and criticality of data availability in order to make reliable business decisions; b. demonstrate an understanding of business intelligence, including the importance of data gathering, data storing, data analyzing, and accessing data; c. describe where to look for data in an organization and create required reports; d. apply different analytics modeling concepts on enterprise data; e. understand the functions and data access constraints of various departments within an organization and provide compliance reports; f. work on various analytic tools available in the market for various business functions; g. participate actively in business discussions with various departments and create common reports or specific/uni
+
+Evidence 3:
+[Page 1, Chunk 0]
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+--- GENERATION DIAGNOSTICS ---
+Actual input tokens: 1124
+Maximum input tokens: 4096
+
+
+======================================================================
+RAG ANSWER
+======================================================================
+Answer: 
+
+The courses related to collecting, managing, analyzing, and applying data are part of the BSIT-BA program. The following courses are included in the curriculum:
+
+1. **Statistics for Business Analytics** - This course is part of the IT Domain Courses and focuses on statistical methods used in business analytics, which includes data collection, analysis, and interpretation.
+
+2. **Macro Programming** - This course is also part of the IT Domain Courses. It likely involves programming techniques that are essential for data management and analysis.
+
+3. **Advanced Statistics** - Another course in the IT Domain Courses, this course would cover more complex statistical methods used in data analysis.
+
+4. **Data Analysis using Excel** - This course is part of the IT Domain Courses and focuses on using Excel for data analysis, which includes data collection, management, and analysis.
+
+5. **Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using** - This course is part of the IT Domain Courses and involves data management, statistical analysis, and the creation of data storytelling and dashboards, which are essential for data application and visualization.
+
+These courses are part of the BSIT-BA program and are listed in the curriculum evidence provided. The specific year or semester for these courses is not explicitly
+
+
+======================================================================
+RETRIEVED SOURCES
+======================================================================
+
+[1] Page 7 | Chunk 12 | Similarity 0.6342
+----------------------------------------------------------------------
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+[2] Page 5 | Chunk 8 | Similarity 0.5749
+----------------------------------------------------------------------
+Page 94 PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT) major in Business Analytics, the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Business Analytics program; 2. become effective collaborators and innovators in analytics, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life -long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT major in Business Analytics program shall be able to: a. understand data management concepts and criticality of data availability in order to make reliable business decisions; b. demonstrate an understanding of business intelligence, including the importance of data gathering, data storing, data analyzing, and accessing data; c. describe where to look for data in an organization and create required reports; d. apply different analytics modeling concepts on enterprise data; e. understand the functions and data access constraints of various departments within an organization and provide compliance reports; f. work on various analytic tools available in the market for various business functions; g. participate actively in business discussions with various departments and create common reports or specific/uni
+
+[3] Page 1 | Chunk 0 | Similarity 0.5076
+----------------------------------------------------------------------
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+
+======================================================================
+RAG PROMPT SENT TO LLM
+======================================================================
+&lt;|im_start|&gt;user
+Question: Which BSIT-BA courses relate to collecting, managing, analyzing, and applying data? Include their listed year or semester.
+
+Answer using only the supplied José Rizal University evidence. The inquiry scope is limited to the Bachelor of Science in Information Technology (BSIT) and BSIT with Specialization in Business Analytics (BSIT-BA). Explain only details supported by the evidence, such as program descriptions, subjects, curriculum structure, course descriptions, and stated prerequisites. Keep program names, course codes, and school-year labels accurate. Clearly distinguish BSIT from BSIT-BA. The source may describe electives for other IT tracks; do not present those as required BSIT or BSIT-BA courses unless the curriculum evidence explicitly says so. Do not invent facts, use outside knowledge, make admission-eligibility decisions, or claim a program is personally suitable for the user. If the evidence does not answer the question, respond exactly: &#x27;I cannot find the answer in the provided document.&#x27;
+
+Evidence:
+[Page 7, Chunk 12]
+Page 96 GROUP REQUIREMENTS FOR THE DEGREE OF BACHELOR OF SCIENCE IN INFORMATION TECHNOLOGY WITH SPECIALIZATION IN BUSINESS ANALYTICS (BSIT-BA) Units Units 1. Technical Courses a. IT Common Courses 18 Fundamentals of Information Technology Computer Programming 1 Computer Programming 2 Database Fundamentals Applications Development and Emerging Technologies Data Structures and Algorithm 3 3 3 3 3 3 b. IT Professional Courses 51 Human Computer Interaction Information Security 1 Information Security 2 Data Modeling Integrative Programming &amp; Technologies 1 Discrete Structures Quantitative Techniques for IT Network Technologies 1 Network Technologies 2 Internship System Administration &amp; Maintenance System Integration &amp; Arch 1 Social &amp; Professional Issues in IT IT Project 1 IT Project 2 Analytic Application 3 3 3 3 3 3 3 3 3 6 3 3 3 3 3 3 c. IT Domain Courses Statistics for Business Analytics Macro Programming Advanced Statistics Data Analysis using Excel Data Management and Statistical Analysis using Data Storytelling and Dashboard Design Using 3 3 3 3 3 3 18 d. Professional Elective Courses 12 ITE Elective 1 – Fundamentals of Business Analysis ITE Elective 2 – Enterprise Data Management ITE Elective 3 – Fundamentals of Analysis Modelling ITE Elective 4 – Analytics Techniques &amp; Tools 3 3 3 3 2. Non-Technical Course a. General Education Courses 24 Understanding the Self Readings in Philippine History Contemporary World 3 3 3
+
+[Page 5, Chunk 8]
+Page 94 PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT) major in Business Analytics, the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Business Analytics program; 2. become effective collaborators and innovators in analytics, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life -long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT major in Business Analytics program shall be able to: a. understand data management concepts and criticality of data availability in order to make reliable business decisions; b. demonstrate an understanding of business intelligence, including the importance of data gathering, data storing, data analyzing, and accessing data; c. describe where to look for data in an organization and create required reports; d. apply different analytics modeling concepts on enterprise data; e. understand the functions and data access constraints of various departments within an organization and provide compliance reports; f. work on various analytic tools available in the market for various business functions; g. participate actively in business discussions with various departments and create common reports or specific/uni
+
+[Page 1, Chunk 0]
+Page 90 INFORMATION TECHNOLOGY PROGRAM The Bachelor of Science in Information Technology (BSIT) program highlights the practical application of information technology (IT). It provides students with the breadth and depth of IT needed for professional success in the field. It prepares students to be well-versed in application installation, operation, development, maintenance, administration, and familiarity with hardware installation, operation, and maintenance. PROGRAM EDUCATIONAL OBJECTIVES (PEO) Three to five years after completing the Bachelor of Science in Information Technology (BSIT), the graduates will: 1. excel in their profession/career utilizing the knowledge acquired in the Information Technology program; 2. become effective collaborators and innovators in information technology, applying professional/technical skills and competencies to make a positive impact on society; and 3. be engaged in life-long learning and professional development through self-study, continuing education, or graduate and professional studies. STUDENT OUTCOMES (SO) After the completion of the program, the graduates of the BSIT program shall be able to: a. apply the knowledge of computing, science, and mathematics appropriate to the discipline; b. understand best practices and standards and their applications; c. analyze complex problems, identify and define the computing requirements appropriate to its solution; d. identify and analyze user needs and take them into account in the selection,
+
+Answer:&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+&lt;think&gt;
+
+&lt;/think&gt;
+
+
+
+
+Question: exit
+
+RAG session terminated.
+</pre></section><section class="nb-markdown"><h4>10. END</h4></section><section class="nb-markdown"><h4>Cell 10: End</h4>
+<p>This cell&#x27;s purpose is to mark the end of the interactive RAG program. This final cell gives a clear completion message when the user exits the continuous question-answer loop. This closing message appears only after the user enters the exit command.</p>
+<p><code>print(&quot;RAG PROGRAM FINISHED&quot;)</code> is used to print spacing and a closing banner after the loop has ended.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 32 · In [32]</summary><pre><code>print(&quot;\n&quot;)
+print(&quot;=&quot; * 70)
+print(&quot;RAG PROGRAM FINISHED&quot;)
+print(&quot;=&quot; * 70)</code></pre></details><pre class="nb-output">
+
+======================================================================
+RAG PROGRAM FINISHED
+======================================================================
+</pre></section></div><a class="nb-end" href="../index.html#work">← Back to activities</a></main></body></html>

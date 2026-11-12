@@ -1,0 +1,201 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Building and Evaluating a RAG Chatbot — Notebook</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/notebook.css"><script src="../assets/notebook.js" defer></script></head><body><a class="skip" href="#notebook">Skip to notebook</a><header class="nb-toolbar"><a href="../index.html#work">← Back to activities</a><div><button id="toggle-code" aria-pressed="false">Hide code</button><a href="../ACTIVITIES/MIDTERMS/WEEK%2008%20-%20Lab%20Exercise%20PT-M1%20%28Building%20and%20Evaluating%20a%20RAG%20Chatbot%29/PT_M1_RAG_Arcane_Lore_Chatbot_ENRIQUEZ%20%281%29%20%281%29.ipynb" download>Download .ipynb ↗</a></div></header><main class="nb-page" id="notebook"><p class="eyebrow">MIDTERMS / WEEK 08 · NOTEBOOK</p><h1>Building and Evaluating a RAG Chatbot</h1><p class="nb-filename">PT_M1_RAG_Arcane_Lore_Chatbot_ENRIQUEZ (1) (1).ipynb</p><p class="nb-intro">Read the explanations, code, and saved results below. This preview does not run code; interactive widgets require opening the original notebook in Jupyter or Colab.</p><p class="nb-stats">9 code cells · 10 saved outputs</p><div class="nb-content"><section class="nb-markdown"><h2>ITCC508 Lab Exercise PT-M1</h2>
+<h3>Building and Evaluating a Domain-Specific RAG Chatbot</h3>
+<p><strong>Course:</strong> ITC CS08 — Introduction to LLMOps and RAG Concepts
+<strong>Topic:</strong> Retrieval-Augmented Generation (RAG) &amp; Hallucination Mitigation
+<strong>Chosen Domain:</strong> Gaming Lore — <em>Arcane</em> (League of Legends universe)</p>
+<p><strong>Problem Statement:</strong> General-purpose LLMs are frequently trained on large amounts of internet fan-content about popular franchises, which mixes canon lore with fan theories, misremembered details, and outright fabrications. This makes it hard to trust an LLM&#x27;s answers about a specific franchise&#x27;s &quot;true&quot; story details. This chatbot solves that problem by grounding the LLM strictly in a curated set of accurate <em>Arcane</em> lore documents, so that answers are traceable to a specific, verifiable source rather than to whatever the model happened to memorize during pre-training.</p>
+<p><strong>Source Files (stored in a <code>my_data</code> folder in Google Drive, at <code>/content/drive/MyDrive/my_data</code>):</strong></p>
+<ul>
+<li><code>arcane_character_profiles.txt</code> — biographies of the main characters (Vi, Jinx/Powder, Silco, Jayce, Viktor, Caitlyn).</li>
+<li><code>hextech_technology.txt</code> — the in-universe technology of Hextech: its origins, the Hex Crystal, notable inventions, and the Hexcore.</li>
+<li><code>piltover_zaun_setting.txt</code> — the world-building: the twin cities of Piltover and Zaun, their conflict, and the drug Shimmer.</li>
+</ul></section><section class="nb-markdown"><h4>Cell 1: Environment Setup &amp; Package Installation</h4>
+<p>This cell runs a shell command from inside the notebook the <code>!</code> prefix tells Jupyter/Colab to hand the line to the underlying OS shell instead of the Python interpreter. It installs every third-party library the rest of the notebook depends on. Colab and Jupyter runtimes start out bare, so none of these packages exist yet; if this cell is skipped, every <code>import</code> statement further down will fail with a <code>ModuleNotFoundError</code>. The <code>-q</code> flag just keeps the install logs quiet so the notebook output stays readable for grading.</p>
+<p>Here&#x27;s what each package is for and why it&#x27;s needed:</p>
+<ul>
+<li><strong>langchain</strong> — the core orchestration framework. It provides the base abstractions (documents, chains, prompts) that every other LangChain package builds on, so nothing downstream would work without it.</li>
+<li><strong>langchain-classic</strong> — a newer, separate package that LangChain split the older <code>create_retrieval_chain</code> and <code>create_stuff_documents_chain</code> helpers into. Recent LangChain versions moved this &quot;classic&quot; chain-building functionality out of the core <code>langchain</code> package, so it now has to be installed and imported on its own this is what Cell 6 relies on.</li>
+<li><strong>langchain-community</strong> — LangChain&#x27;s community-maintained integrations package. It supplies <code>DirectoryLoader</code> and <code>Chroma</code>, used further down, because these wrap third-party tools rather than being part of core LangChain.</li>
+<li><strong>langchain-groq</strong> — LangChain&#x27;s official Groq integration. It supplies the <code>ChatGroq</code> class used later to call our chat model on Groq&#x27;s hosted inference API. Groq is used here because it offers very low-latency inference for open-weight models.</li>
+<li><strong>langchain-huggingface</strong> — LangChain&#x27;s Hugging Face integration. It supplies <code>HuggingFaceEmbeddings</code>, used to turn text into vectors, letting us use a free, open-source embedding model instead of a paid embedding API.</li>
+<li><strong>chromadb</strong> — an open-source vector database. It stores the embedded document chunks and lets us search them by similarity this is the &quot;retrieval&quot; half of Retrieval-Augmented Generation, and without it there is nothing to retrieve from.</li>
+<li><strong>pypdf</strong> — a PDF-parsing library, included so document loaders can extract text from <code>.pdf</code> files if any end up in the data folder. It keeps the pipeline general-purpose even though our chosen domain files are <code>.txt</code>.</li>
+<li><strong>unstructured</strong> — a general-purpose document parsing library used internally by <code>DirectoryLoader</code> to read and normalize different file types (including plain <code>.txt</code>) into LangChain <code>Document</code> objects. It&#x27;s what actually powers the &quot;load anything from a folder&quot; behavior relied on when we load our documents from Google Drive.</li>
+</ul></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 1 · In [5]</summary><pre><code># Cell 1: Environment Setup &amp; Package Installation
+!pip install -q langchain langchain-classic langchain-community langchain-groq langchain-huggingface chromadb pypdf unstructured</code></pre></details></section><section class="nb-markdown"><h4>Explanation — Cell 2: Secure API Key Configuration</h4>
+<p><code>import os</code> brings in Python&#x27;s built-in operating-system interface module, which lets the notebook read and write environment variables through <code>os.environ</code>. This matters because LangChain&#x27;s <code>ChatGroq</code> class automatically looks for the Groq API key inside the environment variable <code>GROQ_API_KEY</code>, so <code>os</code> is what lets us set that value.</p>
+<p><code>import getpass</code> brings in Python&#x27;s built-in secure-input module. It provides <code>getpass.getpass()</code>, a function that reads input from the user <strong>without echoing it to the screen</strong>, which keeps the API key from showing up in the notebook&#x27;s visible output or cell history a basic but important credential-security practice.</p>
+<p>The line <code>if &quot;GROQ_API_KEY&quot; not in os.environ:</code> is a conditional check that only prompts for the key if it hasn&#x27;t already been set in this session. This avoids re-prompting every time the cell is accidentally re-run, and still allows the key to be supplied another way if preferred.</p>
+<p>Finally, <code>os.environ[&quot;GROQ_API_KEY&quot;] = getpass.getpass(&quot;Enter your Groq API Key: &quot;)</code> captures the typed key and stores it as an environment variable for the rest of the session. This is the single place the key is ever handled since it&#x27;s never printed or hard-coded into a cell, it won&#x27;t accidentally leak if the notebook file itself is shared or committed to a repository.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 2 · In [7]</summary><pre><code># Cell 2: Secure API Key Configuration
+import os
+import getpass
+# Prompts for API key securely without saving or echoing plain text in notebook cells
+if &quot;GROQ_API_KEY&quot; not in os.environ:
+    os.environ[&quot;GROQ_API_KEY&quot;] = getpass.getpass(&quot;Enter your Groq API Key: &quot;)</code></pre></details></section><section class="nb-markdown"><h4>Explanation — Cell 3: Google Drive Mount, Data Loading &amp; Chunking</h4>
+<p>This notebook reads the <em>Arcane</em> lore files straight from Google Drive instead of writing them into the runtime from Python strings. This is more convenient to re-run: as long as the <code>my_data</code> folder already exists in Drive, you never have to re-upload or re-create the source files every time the runtime resets — you only need to mount your Drive and point the loader at the right folder.</p>
+<p><code>from google.colab import drive</code> imports Colab&#x27;s Drive-mounting helper. This is a Colab-specific module, which is why this whole cell only works when the notebook is actually running on Colab rather than a plain local Jupyter server.</p>
+<p><code>drive.mount(&#x27;/content/drive&#x27;)</code> mounts my Google Drive into the Colab virtual machine&#x27;s filesystem at <code>/content/drive</code>, and will prompt me to authorize access the first time it runs in a session. Once mounted, any file in your Drive becomes readable through a normal file path, which is what lets <code>DirectoryLoader</code> treat it exactly like a local folder.</p>
+<p><code>data_path = &quot;/content/drive/MyDrive/my_data&quot;</code> defines the path to the folder inside my Drive where the three <em>Arcane</em> lore <code>.txt</code> files live. This must exactly match the folder&#x27;s real location and name in my Drive, otherwise the loader below will simply find zero files and every later step embedding, retrieval, generation will have nothing to work with. This is the single most common reason a Drive-based version of this notebook fails to run.</p>
+<p><code>loader = DirectoryLoader(data_path, glob=&quot;**/*.txt&quot;, show_progress=True)</code> configures the loader to recursively scan <code>data_path</code> and pick up only <code>.txt</code> files. The <code>glob=&quot;**/*.txt&quot;</code> pattern is narrower than a plain <code>&quot;**/<em>.</em>&quot;</code> on purpose, so it won&#x27;t accidentally try to parse unrelated file types that might also be sitting in that Drive folder, while <code>show_progress=True</code> displays a progress bar as it works.</p>
+<p><code>raw_documents = loader.load()</code> actually reads the matched files from Drive and returns a list of <code>Document</code> objects, each holding the full text of one file plus its source path in <code>metadata</code>. This is the &quot;Document Loading&quot; stage of the RAG architecture, and it produces the raw material the rest of the pipeline works on.</p>
+<p><code>text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)</code> configures a splitter that tries to break text at natural boundaries paragraphs first, then sentences, then words, while keeping each chunk to roughly 500 characters. <code>chunk_size=500</code> keeps chunks small enough to be embedded precisely and retrieved individually, while <code>chunk_overlap=50</code> repeats the last 50 characters of one chunk at the start of the next, so a sentence split across a chunk boundary isn&#x27;t completely lost in either half.</p>
+<p><code>documents = text_splitter.split_documents(raw_documents)</code> applies the splitter to every raw document loaded from Drive and returns the final list of small chunks. These chunks not the full original documents are what get embedded and stored in the vector database in the next cell.</p>
+<p>Finally, the <code>print(...)</code> statement reports how many source files were found in Drive and how many chunks they produced. This is the key sanity check for this Drive-based setup specifically: if it prints <code>0</code> raw documents, the most likely cause is that <code>data_path</code> doesn&#x27;t match where the files actually sit in Drive, and everything downstream needs to be re-checked before continuing.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 3 · In [8]</summary><pre><code># Cell 3: Google Drive Mount, Data Loading &amp; Chunking
+from google.colab import drive
+from langchain_community.document_loaders import DirectoryLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# Mount Google Drive
+drive.mount(&#x27;/content/drive&#x27;)
+
+# Path to the dataset folder in Google Drive
+data_path = &quot;/content/drive/MyDrive/my_data&quot;
+
+# Load all .txt documents from the folder
+loader = DirectoryLoader(
+    data_path,
+    glob=&quot;**/*.txt&quot;,
+    show_progress=True
+)
+
+raw_documents = loader.load()
+
+# Split documents into smaller semantic chunks
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,
+    chunk_overlap=50
+)
+
+documents = text_splitter.split_documents(raw_documents)
+
+print(
+    f&quot;Loaded {len(raw_documents)} raw document(s) and &quot;
+    f&quot;split into {len(documents)} chunks.&quot;
+)</code></pre></details><pre class="nb-output">Drive already mounted at /content/drive; to attempt to forcibly remount, call drive.mount(&quot;/content/drive&quot;, force_remount=True).
+</pre><pre class="nb-output">100%|██████████| 3/3 [00:00&lt;00:00, 24.09it/s]</pre><pre class="nb-output">Loaded 3 raw document(s) and split into 36 chunks.
+</pre><pre class="nb-output">
+</pre></section><section class="nb-markdown"><h4>Explanation — Cell 4: Embedding Model &amp; Vector DB Indexing</h4>
+<p><code>from langchain_huggingface import HuggingFaceEmbeddings</code> imports a wrapper class that runs a Hugging Face sentence-embedding model locally. Embeddings are what allow &quot;semantic&quot; search finding chunks that are conceptually related to a query, not just ones that share exact keywords. <code>from langchain_community.vectorstores import Chroma</code> imports the LangChain wrapper around the ChromaDB vector database, which is what actually stores the embeddings and performs the similarity search at query time.</p>
+<p><code>embeddings = HuggingFaceEmbeddings(model_name=&quot;all-MiniLM-L6-v2&quot;)</code> loads the <code>all-MiniLM-L6-v2</code> sentence-transformer model, which converts any piece of text into a 384-dimension numeric vector. This particular model is small, fast, free, and runs on CPU, which is why it&#x27;s a common default for lab and prototype RAG systems rather than a large paid embedding API.</p>
+<p><code>vectorstore = Chroma.from_documents(documents=documents, embedding=embeddings)</code> embeds every chunk produced in Cell 3 using the model above, then stores each resulting vector along with the original text and metadata inside a new in-memory Chroma collection. This is the indexing step of RAG: it converts our <em>Arcane</em> lore chunks into a searchable numeric index that later steps can query.</p>
+<p><code>retriever = vectorstore.as_retriever(search_kwargs={&quot;k&quot;: 3})</code> wraps the vector store in a standard LangChain <code>Retriever</code> interface configured to return the top 3 most similar chunks for any given query. This <code>k=3</code> value is the &quot;top-k retrieval value&quot; mentioned in the report requirements, and it controls the trade-off between giving the LLM enough context to answer correctly and overwhelming it with irrelevant text.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 4 · In [9]</summary><pre><code># Cell 4: Embedding Model &amp; Vector DB Indexing
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+
+# Initialize open-source embedding model
+embeddings = HuggingFaceEmbeddings(model_name=&quot;all-MiniLM-L6-v2&quot;)
+
+# Store embeddings into Chroma vector database
+vectorstore = Chroma.from_documents(
+    documents=documents,
+    embedding=embeddings
+)
+
+# Set vectorstore as a retriever
+retriever = vectorstore.as_retriever(search_kwargs={&quot;k&quot;: 3})</code></pre></details><pre class="nb-output">Loading weights:   0%|          | 0/103 [00:00&lt;?, ?it/s]</pre></section><section class="nb-markdown"><h4>Explanation — Cell 5: Model Initialization and Domain System Prompt</h4>
+<p><code>from langchain_groq import ChatGroq</code> imports the chat-model wrapper for Groq&#x27;s hosted inference API this is the class that actually talks to the <code>llama-3.1-8b-instant</code> model over the network. <code>from langchain_core.prompts import ChatPromptTemplate</code> imports a class for building reusable, parameterized chat prompts, letting us define a prompt with placeholders like <code>{context}</code> and <code>{input}</code> once and have LangChain fill them in automatically for every query.</p>
+<p><code>llm = ChatGroq(model_name=&quot;openai/gpt-oss-20b&quot;, temperature=0)</code> creates a client for <code>gpt-oss-20b</code>, OpenAI&#x27;s open-weight 20-billion-parameter model, hosted on Groq&#x27;s fast inference infrastructure. Setting <code>temperature=0</code> makes the model&#x27;s output deterministic and conservative it always picks the most likely next token which is what makes it stick closely to the retrieved context instead of improvising.</p>
+<p>The <code>system_prompt = (...)</code> block is a multi-line string that defines the instructions the LLM receives on every call. It tells the model to act as a domain-specific assistant, to answer strictly from the provided context, and to explicitly refuse with a fixed fallback sentence if the answer isn&#x27;t in the context. This system prompt is the main hallucination-mitigation mechanism in the whole system. The <code>&quot;Context:\n{context}&quot;</code> line at the end is a template placeholder that reserves a spot where the retrieved document chunks will be automatically inserted at query time without it, the LLM would receive no grounding text at all and would simply answer from its own pre-trained knowledge, defeating the purpose of RAG.</p>
+<p><code>prompt = ChatPromptTemplate.from_messages([(&quot;system&quot;, system_prompt), (&quot;human&quot;, &quot;{input}&quot;)])</code> builds a two-message chat template: a system message carrying the rules above, and a human message containing the placeholder <code>{input}</code> for the user&#x27;s actual question. This mirrors how chat-based LLM APIs expect conversations to be formatted (system role plus user role), and it&#x27;s what the chain in Cell 6 calls at runtime.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 5 · In [10]</summary><pre><code># Cell 5: Model Initialization and Domain System Prompt
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
+
+# Initialize the SLM
+llm = ChatGroq(
+    model_name=&quot;openai/gpt-oss-20b&quot;,
+    temperature=0
+)
+
+# Custom domain system prompt
+system_prompt = (
+    &quot;You are a specialized AI assistant for the user&#x27;s uploaded domain.\n&quot;
+    &quot;Answer questions strictly using ONLY the provided context below.\n&quot;
+    &quot;If the answer cannot be found in the context, reply: &#x27;I cannot answer based on the provided domain data.&#x27;\n\n&quot;
+    &quot;Context:\n{context}&quot;
+)
+
+prompt = ChatPromptTemplate.from_messages([
+    (&quot;system&quot;, system_prompt),
+    (&quot;human&quot;, &quot;{input}&quot;),
+])</code></pre></details></section><section class="nb-markdown"><h4>Explanation — Cell 6: Pipeline Assembly</h4>
+<p><code>from langchain_classic.chains import create_retrieval_chain</code> imports a factory function that wires a retriever and a &quot;document-combining&quot; chain together into one runnable pipeline this is the function that turns our separate pieces (retriever, prompt, LLM) into a single, callable RAG chain. <code>from langchain_classic.chains.combine_documents import create_stuff_documents_chain</code> imports a factory function that builds a chain which &quot;stuffs&quot; (concatenates) all retrieved documents into the prompt&#x27;s <code>{context}</code> slot before calling the LLM. Stuffing is the simplest context-combination strategy, and it&#x27;s appropriate here because our <code>k=3</code> chunks of at most 500 characters each comfortably fit inside the model&#x27;s context window.</p>
+<p><code>combine_docs_chain = create_stuff_documents_chain(llm, prompt)</code> creates a chain that takes the retrieved documents plus the user&#x27;s input, fills them into the <code>prompt</code> template from Cell 5, and sends the result to <code>llm</code>. This is the component that actually generates the final natural-language answer.</p>
+<p><code>rag_chain = create_retrieval_chain(retriever, combine_docs_chain)</code> wraps everything together: given a raw user question, it first calls <code>retriever</code> to fetch the top-3 relevant chunks, then passes them into <code>combine_docs_chain</code> to produce the answer. This single object, <code>rag_chain</code>, is the complete, end-to-end RAG system — from this point on, we only need to call <code>.invoke()</code> on it to ask questions.</p>
+<p>Both imports come from <code>langchain_classic</code> rather than plain <code>langchain</code> because recent LangChain releases moved this pre-built retrieval-chain functionality into the separate <code>langchain-classic</code> package installed in Cell 1. If you see an <code>ImportError</code> here, it usually means either <code>langchain-classic</code> wasn&#x27;t installed, or an old, cached version of <code>langchain</code> is shadowing it re-running Cell 1 and restarting the runtime resolves this.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 6 · In [11]</summary><pre><code># Cell 6: Pipeline Assembly
+from langchain_classic.chains import create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+
+# Combine prompt and LLM to process context
+combine_docs_chain = create_stuff_documents_chain(llm, prompt)
+
+# Assemble full retrieval-augmented generation chain
+rag_chain = create_retrieval_chain(retriever, combine_docs_chain)</code></pre></details></section><section class="nb-markdown"><h4>Explanation — Cell 7: Testing Your Custom Domain Chatbot (In-Domain Query)</h4>
+<p><code>user_query = &quot;Who is Jinx?&quot;</code> defines an in-domain test question one whose answer genuinely exists in <code>arcane_character_profiles.txt</code>, since Jinx (Powder) is one of the profiled characters. This is Test Case 1, used to confirm the pipeline works correctly before moving on to the out-of-domain fallback and hallucination tests.</p>
+<p><code>response = rag_chain.invoke({&quot;input&quot;: user_query})</code> runs the full RAG pipeline: it retrieves the top-3 relevant chunks for the query, inserts them into the prompt, and calls the LLM to generate an answer. <code>.invoke()</code> is LangChain&#x27;s standard &quot;run this chain once, synchronously&quot; entry point, and the returned <code>response</code> dictionary contains both the generated answer and the source chunks used to produce it.</p>
+<p><code>print(&quot;--- DOMAIN QUERY ANSWER ---&quot;)</code> and <code>print(response[&quot;answer&quot;])</code> display the LLM&#x27;s generated answer, which lives under the <code>&quot;answer&quot;</code> key of the response dictionary.</p>
+<p><code>print(&quot;\n--- RETRIEVED SOURCE CHUNKS ---&quot;)</code> prints a header before listing the chunks that were retrieved, separating the generated answer from the supporting evidence in the console output for readability.</p>
+<p>The loop <code>for i, doc in enumerate(response[&quot;context&quot;]):</code> iterates over the list of <code>Document</code> objects under the <code>&quot;context&quot;</code> key — i.e., exactly the chunks the retriever fed to the LLM — which lets us audit which chunks the model actually used, essential for verifying an answer is truly grounded rather than hallucinated. Inside the loop, <code>print(f&quot;Chunk {i+1} Source:&quot;, doc.metadata.get(&quot;source&quot;, &quot;Unknown&quot;))</code> prints the originating filename for each retrieved chunk, numbered starting at 1. This gives us traceability: for every claim in the answer, we can point back to the exact source file it came from, which is the core value proposition of a grounded RAG system over a plain LLM.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 7 · In [12]</summary><pre><code># Cell 7: Testing Your Custom Domain Chatbot
+# Test Case 1: In-Domain Query
+user_query = &quot;Who is Jinx?&quot;
+response = rag_chain.invoke({&quot;input&quot;: user_query})
+print(&quot;--- DOMAIN QUERY ANSWER ---&quot;)
+print(response[&quot;answer&quot;])
+
+print(&quot;\n--- RETRIEVED SOURCE CHUNKS ---&quot;)
+for i, doc in enumerate(response[&quot;context&quot;]):
+    print(f&quot;Chunk {i+1} Source:&quot;, doc.metadata.get(&quot;source&quot;, &quot;Unknown&quot;))</code></pre></details><pre class="nb-output">--- DOMAIN QUERY ANSWER ---
+Jinx is the name given to Powder, Vi’s younger sister. After a childhood accident that killed several people, Vi abandoned her. Powder was then taken in by Silco, the crime boss of Zaun, who raised her as a weapon for his cause and renamed her Jinx. She became a brilliant but unstable inventor of chaotic weaponry and served as Silco’s enforcer and successor.
+
+--- RETRIEVED SOURCE CHUNKS ---
+Chunk 1 Source: /content/drive/MyDrive/my_data/arcane_character_profiles.txt
+Chunk 2 Source: /content/drive/MyDrive/my_data/arcane_character_profiles.txt
+Chunk 3 Source: /content/drive/MyDrive/my_data/arcane_character_profiles.txt
+</pre></section><section class="nb-markdown"><h4>Explanation — Optional Extra: Gradio Chat Interface</h4>
+<p>This cell is not part of the required lab template, but it wraps the finished <code>rag_chain</code> in a small web-based chat UI so the chatbot can be interacted with conversationally instead of one <code>print()</code> at a time.</p>
+<p><code>!pip install gradio -q</code> installs Gradio, a Python library for quickly building shareable web UIs, quietly so the install log doesn&#x27;t clutter the notebook.</p>
+<p><code>import gradio as gr</code> imports the library under the conventional alias <code>gr</code>.</p>
+<p><code>def chatbot(message, history):</code> defines the function Gradio will call every time a user sends a message. It receives the new <code>message</code> plus the running <code>history</code> of the conversation (required by Gradio&#x27;s <code>ChatInterface</code>, even though it isn&#x27;t used here). Inside, <code>response = rag_chain.invoke({&quot;input&quot;: message})</code> runs the exact same grounded RAG pipeline built above on whatever the user typed, and <code>return response[&quot;answer&quot;]</code> sends just the generated answer text back to be displayed in the chat window.</p>
+<p><code>demo = gr.ChatInterface(fn=chatbot, title=..., description=...)</code> builds the chat widget itself, wiring the <code>chatbot</code> function in as the handler for every new message, and giving the interface a title and description so it&#x27;s clear what it&#x27;s for.</p>
+<p><code>demo.launch(share=True)</code> starts a local web server for the interface and, because <code>share=True</code>, also generates a temporary public link so the chatbot can be tested or shared without needing to expose your own machine or Colab session directly.</p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 8 · In [13]</summary><pre><code>!pip install gradio -q
+
+import gradio as gr
+
+def chatbot(message, history):
+    response = rag_chain.invoke({&quot;input&quot;: message})
+    return response[&quot;answer&quot;]
+
+demo = gr.ChatInterface(
+    fn=chatbot,
+    title=&quot;League of Legends: Arcane Lore\nRAG Chatbot&quot;,
+    description=&quot;Ask any question about League of Legends Arcane Lore.&quot;
+)
+
+demo.launch(share=True)</code></pre></details><pre class="nb-output">Colab notebook detected. To show errors in colab notebook, set debug=True in launch()
+* Running on public URL: https://90a954ad628e978096.gradio.live
+
+This share link is temporary and will last for up to 1 week (best effort). For free permanent hosting and GPU upgrades, run `gradio deploy` from the terminal in the working directory to deploy to Hugging Face Spaces (https://huggingface.co/spaces)
+</pre><div class="nb-rich-output"><div></div></div><pre class="nb-output"></pre></section><section class="nb-markdown"><h3>Task 2: Out-of-Domain Fallback Test</h3>
+<p><code>ood_query = &quot;...&quot;</code> defines a question that has nothing to do with our <em>Arcane</em> lore dataset it asks about real-world space exploration instead of Piltover, Zaun, or Hextech. This directly tests whether the <code>temperature=0</code> plus explicit-refusal system prompt from Cell 5 successfully prevents the model from making up an answer when no relevant context exists.</p>
+<p><code>ood_response = rag_chain.invoke({&quot;input&quot;: ood_query})</code> runs the exact same grounded pipeline (the baseline configuration) against the out-of-domain question. Because <code>retriever</code> will still return its top-3 &quot;closest&quot; chunks even when none of them are actually relevant, this checks whether the LLM correctly recognizes that those chunks don&#x27;t answer the question and falls back rather than fabricating a connection.</p>
+<p><code>print(ood_response[&quot;answer&quot;])</code> displays the model&#x27;s response to the out-of-domain query. We expect this to print the required fallback message: <em>&quot;I cannot answer based on the provided domain data.&quot;</em></p></section><section class="nb-cell"><details class="nb-code" open><summary>Code cell 9 · In [14]</summary><pre><code># Task 2: Out-of-Domain Fallback Test (baseline configuration: temperature=0, with fallback rule)
+ood_query = &quot;What year did NASA&#x27;s Apollo 11 mission land on the moon?&quot;
+ood_response = rag_chain.invoke({&quot;input&quot;: ood_query})
+print(&quot;--- OUT-OF-DOMAIN QUERY ---&quot;)
+print(ood_query)
+print(&quot;\n--- MODEL RESPONSE (baseline) ---&quot;)
+print(ood_response[&quot;answer&quot;])</code></pre></details><pre class="nb-output">--- OUT-OF-DOMAIN QUERY ---
+What year did NASA&#x27;s Apollo 11 mission land on the moon?
+
+--- MODEL RESPONSE (baseline) ---
+I cannot answer based on the provided domain data.
+</pre></section><section class="nb-markdown"><h2><strong>Observe &amp; Compare</strong></h2>
+<p>This is the section after I re-running Cell 5 with the modified temperature and system_prompt, and re-invoking rag_chain with the same out-of-domain query.</p>
+<p><strong>Baseline (temperature=0, with fallback rule) — Task 2 output:</strong></p>
+<p><em>&quot;I cannot answer based on the provided domain data.&quot;</em></p>
+<p><strong>Stress-test (temperature=1.0, fallback rule removed) — Task 3 output:</strong></p>
+<p><em>&quot;I&#x27;m sorry, I don&#x27;t have that information.&quot;</em></p>
+<h2><strong>Comparison of Responses Under Both Configurations</strong></h2>
+<p>Under the baseline configuration (temperature=0, fallback rule included), I asked the out-of-domain question about Apollo 11, and the chatbot replied with the exact scripted fallback message: &quot;I cannot answer based on the provided domain data.&quot; This was expected, since the prompt directly told it what to say when the answer isn&#x27;t in the retrieved context.</p>
+<p>Under the stress-test configuration (temperature=1.0, fallback rule removed), I asked the exact same question again. The chatbot still did not answer the question directly it replied, &quot;I&#x27;m sorry, I don&#x27;t have that information,&quot; instead of making up a year or any details about the mission.</p>
+<p>Comparison of the two shows that the model has maintained its reliability in either scenario. The model did not lose its reliability, and it did not make use of information which could not be validated. In fact, the only difference between the two responses is the refusal statement. Without having the fallback sentence ready, the model needed to make one of its own, but it still knew that it did not have an answer to the question in the retrieved context.</p>
+<p>An increase in the temperature level similarly did not lead to any instances of the model hallucinating in this instance. The key impact here is that the higher temperature level increased the unpredictability of the wording used, because with a higher temperature, the model tends to use improbable words instead of the most likely one. However, the increase in the temperature level did not make the model deviate from the instruction of using the given context.</p></section></div><a class="nb-end" href="../index.html#work">← Back to activities</a></main></body></html>
